@@ -18,7 +18,7 @@ Incoming messages are pushed to all connected WebSocket clients the moment signa
 A ready-to-use Docker image is available on GitHub Container Registry. The image includes:
 
 - **Python 3.13** with the WebSocket bridge
-- **signal-cli (native image)**
+- **signal-cli (official upstream release archive)**
 - **DBus** for communication between components
 
 ### Supported platforms
@@ -26,6 +26,9 @@ A ready-to-use Docker image is available on GitHub Container Registry. The image
 - `linux/amd64` (x86_64)
 - `linux/arm/v7` (ARMv7 - Raspberry Pi 2/3)
 - `linux/arm64/v8` (ARM64 - Raspberry Pi 4, Apple Silicon)
+
+The Docker release workflow checks the latest upstream `AsamK/signal-cli`
+release daily and rebuilds/publishes images automatically with that version.
 
 ### Quick start
 
@@ -77,7 +80,8 @@ docker build -t signal-websocket-bridge:local .
 
 ### Base images
 
-- **Builder & Runtime**: `python:3.13-slim-trixie` (Debian 13)
+- **Builder & Runtime**: `debian:testing-slim`
+- **signal-cli source**: upstream release tarball from `AsamK/signal-cli`
 - **Java**: `default-jre-headless` (OpenJDK from Debian repos)
 
 ## Prerequisites (non-Docker)

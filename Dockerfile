@@ -1,13 +1,16 @@
-# Multi-stage build using official signal-cli native image
-# signal-cli native uses GraalVM native image (no Java runtime needed)
+# Multi-stage build with self-managed signal-cli install.
+# Uses upstream release archives so all target platforms are valid images.
 
 # Stage 1: Shared runtime base (install once, reused by builder + final)
-FROM ghcr.io/asamk/signal-cli:latest-native AS runtime-base
+FROM debian:testing-slim AS runtime-base
 
 USER root
 WORKDIR /app
 
-# Install Python runtime and required system libraries
+# Resolved in CI from the latest upstream release; defaults to latest for local builds.
+ARG SIGNAL_CLI_VERSION=latest
+
+# Install Python runtime, Java (required by signal-cli), and required system libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-venv \
@@ -19,10 +22,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libdbus-1-3 \
     dbus-daemon \
+    default-jre-headless \
+    ca-certificates \
+    tar \
     curl \
     supervisor \
     procps \
     && rm -rf /var/lib/apt/lists/*
+
+# Install signal-cli from upstream Java distribution (works across CPU architectures).
+RUN set -eux; \
+    if [ "$SIGNAL_CLI_VERSION" = "latest" ]; then \
+        SIGNAL_CLI_VERSION="$( \
+            curl -fsSL https://api.github.com/repos/AsamK/signal-cli/releases/latest \
+            | sed -n 's/.*"tag_name": "v\([^"]*\)".*/\1/p' \
+            | head -n1 \
+        )"; \
+    fi; \
+    test -n "$SIGNAL_CLI_VERSION"; \
+    curl -fsSL "https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_CLI_VERSION}/signal-cli-${SIGNAL_CLI_VERSION}.tar.gz" -o /tmp/signal-cli.tar.gz; \
+    tar -xzf /tmp/signal-cli.tar.gz -C /opt; \
+    mv "/opt/signal-cli-${SIGNAL_CLI_VERSION}" /opt/signal-cli; \
+    ln -sf /opt/signal-cli/bin/signal-cli /usr/bin/signal-cli; \
+    rm -f /tmp/signal-cli.tar.gz
 
 # Runtime filesystem compatibility
 RUN mkdir -p /var/lib/signal-cli /var/lib/swb \
@@ -36,7 +58,7 @@ FROM runtime-base AS builder
 
 WORKDIR /app
 
-# Install build dependencies for dbus-python
+# Install build dependencies for dbus-python.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     pkg-config \
@@ -69,7 +91,6 @@ COPY --from=builder /app/.venv /app/.venv
 # Copy supervisor configuration
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Create data directories
 # Expose WebSocket / HTTP port
 EXPOSE 8765
 
@@ -87,6 +108,5 @@ ENV SIGNAL_WS_HOST=0.0.0.0 \
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:${SIGNAL_WS_PORT}/health || exit 1
 
-# Reset entrypoint from signal-cli image and use supervisord
-ENTRYPOINT []
+# Use supervisord to run dbus + signal-cli + bridge
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
