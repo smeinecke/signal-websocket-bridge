@@ -1,4 +1,4 @@
-# signalbot
+# signal-websocket-bridge
 
 A WebSocket bridge for signal-cli that exposes incoming Signal messages as push events (via DBus) and allows sending messages via a simple JSON-RPC interface.
 
@@ -9,7 +9,7 @@ Signal Network
      │
 signal-cli (DBus daemon)
      │  DBus signals (push, no polling)
-signalbotcli-websocket.py
+swb (signal-websocket-bridge)
      │  WebSocket (JSON)
 Your application / bot
 ```
@@ -121,16 +121,16 @@ For autostart, install the provided systemd service or DBus activation file from
 
 ```bash
 # Default: system bus, localhost:8765
-python signalbotcli-websocket.py
+python -m swb
 
 # Per-user signal-cli install (session bus)
-python signalbotcli-websocket.py --session
+python -m swb --session
 
 # Custom host/port
-python signalbotcli-websocket.py --host 0.0.0.0 --port 9000
+python -m swb --host 0.0.0.0 --port 9000
 
 # Via environment variables
-SIGNAL_DBUS_BUS=session SIGNAL_WS_HOST=0.0.0.0 SIGNAL_WS_PORT=9000 python signalbotcli-websocket.py
+SIGNAL_DBUS_BUS=session SIGNAL_WS_HOST=0.0.0.0 SIGNAL_WS_PORT=9000 python -m swb
 ```
 
 > **System vs session bus**: signal-cli started as a systemd service or with `--system`
