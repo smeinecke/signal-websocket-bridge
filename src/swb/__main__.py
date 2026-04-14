@@ -4,6 +4,7 @@ import asyncio
 import logging
 import threading
 import time
+from typing import Callable
 
 import dbus.exceptions
 from gi.repository import GLib
@@ -14,6 +15,7 @@ from swb.dbus_client import (
     connect_signal_interface,
     get_bus_instance,
     get_interface,
+    get_interface_for_account,
     get_object_instance,
     handle_dbus_error,
     is_connected,
@@ -63,15 +65,20 @@ def main():
         time.sleep(backoff)
         backoff = min(backoff * 2, 30)
 
-    dispatcher = MethodDispatcher(get_interface, get_bus_instance)
+    def make_dispatcher(account: str | None) -> Callable:
+        """Create a per-connection dispatch function for the given account (or default)."""
+        dispatcher = MethodDispatcher(
+            lambda: get_interface_for_account(account),
+            get_bus_instance,
+        )
 
-    def dispatch_with_reconnect(method: str, params: dict):
-        try:
-            return dispatcher.dispatch(method, params)
-        except dbus.exceptions.DBusException as exc:
-            # Triggers background reconnect thread, then re-raises so the
-            # client receives an error. Client should retry after "Reconnected".
-            handle_dbus_error(exc)
+        def dispatch(method: str, params: dict):
+            try:
+                return dispatcher.dispatch(method, params)
+            except dbus.exceptions.DBusException as exc:
+                handle_dbus_error(exc)
+
+        return dispatch
 
     def get_asyncapi_spec() -> dict:
         return generate_asyncapi_spec(config, get_object_instance())
@@ -82,7 +89,7 @@ def main():
 
     server = WebSocketServer(
         config=config,
-        dispatch_func=dispatch_with_reconnect,
+        dispatch_factory=make_dispatcher,
         asyncapi_json_func=get_asyncapi_spec,
         asyncapi_yaml_func=get_asyncapi_spec,
         connected_clients=connected_clients,

@@ -45,6 +45,34 @@ def _build_object_path(config: Config) -> str:
     return "/org/asamk/Signal"
 
 
+def _autodiscover_object_path(bus: dbus.Bus) -> str:
+    """Discover the per-account object path.
+
+    Multi-account mode: calls SignalControl.listAccounts() to find account sub-paths.
+    Single-account mode: the root object already implements org.asamk.Signal directly,
+    so listAccounts() will fail — fall back to the root path in that case.
+    """
+    root = bus.get_object("org.asamk.Signal", "/org/asamk/Signal")
+    try:
+        control = dbus.Interface(root, "org.asamk.SignalControl")
+        accounts = control.listAccounts()  # type: ignore[attr-defined]
+    except dbus.exceptions.DBusException:
+        # Single-account mode: root object is org.asamk.Signal, not SignalControl
+        logging.info("signal-cli running in single-account mode, using root path")
+        return "/org/asamk/Signal"
+    if not accounts:
+        logging.warning("No accounts registered in signal-cli, using root path")
+        return "/org/asamk/Signal"
+    if len(accounts) > 1:
+        logging.warning(
+            f"Multiple accounts found: {list(accounts)}. "
+            "Set SIGNAL_ACCOUNT to select one explicitly."
+        )
+    path = str(accounts[0])
+    logging.info(f"Auto-discovered account path: {path}")
+    return path
+
+
 def get_bus(config: Config) -> dbus.Bus:
     """Get the appropriate DBus bus."""
     if config.bus == "session":
@@ -79,6 +107,8 @@ def connect_signal_interface(
                 return False
 
             object_path = _build_object_path(config)
+            if object_path == "/org/asamk/Signal":
+                object_path = _autodiscover_object_path(_bus)
             _signal_object = _bus.get_object("org.asamk.Signal", object_path)
             _signal_interface = dbus.Interface(_signal_object, "org.asamk.Signal")
             # Verify connection works
@@ -192,6 +222,17 @@ def get_interface() -> dbus.Interface:
     if _signal_interface is None:
         raise RuntimeError("DBus interface not connected")
     return _signal_interface
+
+
+def get_interface_for_account(account: str | None) -> dbus.Interface:
+    """Get DBus interface for a specific account number, or the default if None."""
+    if account is None:
+        return get_interface()
+    bus = get_bus_instance()
+    dbus_number = account.replace("+", "_")
+    path = f"/org/asamk/Signal/{dbus_number}"
+    obj = bus.get_object("org.asamk.Signal", path)
+    return dbus.Interface(obj, "org.asamk.Signal")
 
 
 def get_object_instance():  # -> dbus.ProxyObject

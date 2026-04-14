@@ -27,14 +27,14 @@ class WebSocketServer:
     def __init__(
         self,
         config: Config,
-        dispatch_func: Callable,
+        dispatch_factory: Callable,
         asyncapi_json_func: Callable,
         asyncapi_yaml_func: Callable,
         connected_clients: set | None = None,
         clients_lock: threading.Lock | None = None,
     ):
         self.config = config
-        self.dispatch = dispatch_func
+        self.dispatch_factory = dispatch_factory
         self.asyncapi_json = asyncapi_json_func
         self.asyncapi_yaml = asyncapi_yaml_func
 
@@ -63,11 +63,19 @@ class WebSocketServer:
         return web.Response(body=yaml_str, content_type="text/yaml")
 
     async def websocket_handler(self, request: web.Request) -> web.WebSocketResponse:
-        """WebSocket endpoint for JSON-RPC with optional token auth."""
+        """WebSocket endpoint for JSON-RPC with optional token auth.
+
+        Accepts an optional ?account=+4915... query parameter to route calls
+        to a specific Signal account when signal-cli runs in multi-account mode.
+        """
         ws = web.WebSocketResponse()
         await ws.prepare(request)
 
+        account = request.rel_url.query.get("account") or None
+        dispatch = self.dispatch_factory(account)
         peer = request.remote or "unknown"
+        if account:
+            logging.debug(f"WebSocket connection from {peer} using account {account}")
 
         # Token authentication
         if self.config.token:
@@ -122,7 +130,7 @@ class WebSocketServer:
                     params = req.get("params", {})
 
                     try:
-                        result = self.dispatch(method, params)
+                        result = dispatch(method, params)
                         await ws.send_str(json.dumps({"id": req_id, "result": result}))
                     except DBusException as exc:
                         await ws.send_str(json.dumps({"id": req_id, "error": str(exc)}))
