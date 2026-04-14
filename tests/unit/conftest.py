@@ -6,13 +6,14 @@ from pathlib import Path
 
 # Add the tests/unit directory to path to allow importing our mock
 test_dir = Path(__file__).parent
+sys.path.insert(0, str(test_dir))
 
 # Inject mock dbus before any imports
 try:
     import dbus
 except ImportError:
     # Use our mock dbus module
-    from tests.unit import dbus_mock
+    import dbus_mock
 
     # Create proper module types
     dbus_mod = types.ModuleType("dbus")

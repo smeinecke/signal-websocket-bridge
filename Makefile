@@ -37,6 +37,9 @@ vulture:
 pyright:
 	pyright
 
+test:
+	pytest tests/unit -v --cov --cov-report=xml --cov-report=term-missing
+
 # Validate the code (format + check)
 validate: format check complexity bandit pyright
 	@echo "Validation passed. Your code is ready to push."

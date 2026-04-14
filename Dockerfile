@@ -1,8 +1,8 @@
 # Multi-stage build for signal-websocket-bridge
 # Includes signal-cli daemon and the Python bridge
 
-# Stage 1: Build environment with uv
-FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim AS builder
+# Stage 1: Build environment with uv (Debian Trixie - close enough to Ubuntu Noble)
+FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim AS builder
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
 # Stage 2: Runtime with signal-cli
-FROM eclipse-temurin:17-jre-noble AS runtime
+FROM eclipse-temurin:21-jre-noble AS runtime
 
 WORKDIR /app
 
@@ -43,15 +43,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and install signal-cli
-ARG SIGNAL_CLI_VERSION=0.13.13
-RUN curl -L -o /tmp/signal-cli.tar.gz \
-    "https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_CLI_VERSION}/signal-cli-${SIGNAL_CLI_VERSION}-Linux.tar.gz" \
+ARG SIGNAL_CLI_VERSION=0.14.2
+RUN curl -fsSL -o /tmp/signal-cli.tar.gz \
+    "https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_CLI_VERSION}/signal-cli-${SIGNAL_CLI_VERSION}.tar.gz" \
     && tar -xzf /tmp/signal-cli.tar.gz -C /opt \
-    && ln -s "/opt/signal-cli-${SIGNAL_CLI_VERSION}/bin/signal-cli" /usr/local/bin/signal-cli \
+    && ln -sf "/opt/signal-cli-${SIGNAL_CLI_VERSION}/bin/signal-cli" /usr/local/bin/signal-cli \
     && rm /tmp/signal-cli.tar.gz
 
 # Copy uv from builder
-COPY --from=builder /root/.cargo/bin/uv /usr/local/bin/uv
+COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
 

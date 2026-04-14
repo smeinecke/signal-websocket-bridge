@@ -44,7 +44,8 @@ tests/
 
 # Docker
 Dockerfile
-docker/
+docker/*
+!docker/supervisord.conf
 .dockerignore
 
 # Documentation
@@ -58,4 +59,3 @@ README.md
 .codex
 .pre-commit-config.yaml
 python-version
-uv.lock

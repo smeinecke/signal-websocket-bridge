@@ -49,6 +49,78 @@ _KNOWN_SIGNAL_SCHEMAS: dict[str, dict] = {
 }
 
 
+def _parse_method_args(method) -> tuple[list[dict], str | None, dict | None]:
+    """Extract input args, output type and schema from a method element."""
+    in_args: list[dict] = []
+    out_type: str | None = None
+    out_schema: dict | None = None
+
+    for arg in method.findall("arg"):
+        direction = arg.get("direction", "in")
+        sig = arg.get("type", "")
+        if direction == "in":
+            in_args.append({
+                "name": arg.get("name", f"arg{len(in_args)}"),
+                "type": sig,
+                "schema": dbus_signature_to_json_schema(sig),
+            })
+        elif direction == "out":
+            out_type = sig
+            out_schema = dbus_signature_to_json_schema(sig)
+
+    return in_args, out_type, out_schema
+
+
+def _register_method(registry: dict, name: str, in_args: list, out_type: str | None, out_schema: dict | None) -> None:
+    """Register method, keeping the variant with most parameters for overloaded methods."""
+    existing = registry["methods"].get(name)
+    if existing is None or len(in_args) > len(existing["args"]):
+        registry["methods"][name] = {
+            "args": in_args,
+            "return_type": out_type,
+            "return_schema": out_schema or {"type": "null"},
+        }
+
+
+def _parse_signal_args(signal) -> list[dict]:
+    """Extract arguments from a signal element."""
+    args = []
+    for arg in signal.findall("arg"):
+        sig = arg.get("type", "")
+        args.append({
+            "name": arg.get("name", f"arg{len(args)}"),
+            "type": sig,
+            "schema": dbus_signature_to_json_schema(sig),
+        })
+    return args
+
+
+def _extract_interface_data(root) -> dict[str, Any]:
+    """Parse XML root and extract methods and signals from org.asamk.Signal interface."""
+    registry: dict[str, Any] = {"methods": {}, "signals": {}}
+
+    for interface in root.findall(".//interface"):
+        if interface.get("name") != "org.asamk.Signal":
+            continue
+
+        # --- Methods ---
+        for method in interface.findall("method"):
+            name = method.get("name", "")
+            if not name:
+                continue
+            in_args, out_type, out_schema = _parse_method_args(method)
+            _register_method(registry, name, in_args, out_type, out_schema)
+
+        # --- Signals ---
+        for signal in interface.findall("signal"):
+            name = signal.get("name", "")
+            if not name:
+                continue
+            registry["signals"][name] = {"args": _parse_signal_args(signal)}
+
+    return registry
+
+
 def introspect_signal_interface(signal_object) -> dict[str, Any]:
     """Introspect org.asamk.Signal interface and return method registry."""
     if "signal_interface" in _introspection_cache:
@@ -57,62 +129,8 @@ def introspect_signal_interface(signal_object) -> dict[str, Any]:
     try:
         introspectable = dbus.Interface(signal_object, "org.freedesktop.DBus.Introspectable")
         xml_str = introspectable.Introspect()
-
         root = ET.fromstring(xml_str)
-        registry: dict[str, Any] = {"methods": {}, "signals": {}}
-
-        for interface in root.findall(".//interface"):
-            if interface.get("name") != "org.asamk.Signal":
-                continue
-
-            # --- Methods ---
-            for method in interface.findall("method"):
-                name = method.get("name", "")
-                if not name:
-                    continue
-
-                in_args: list[dict] = []
-                out_type: str | None = None
-                out_schema: dict | None = None
-
-                for arg in method.findall("arg"):
-                    direction = arg.get("direction", "in")
-                    sig = arg.get("type", "")
-                    if direction == "in":
-                        in_args.append({
-                            "name": arg.get("name", f"arg{len(in_args)}"),
-                            "type": sig,
-                            "schema": dbus_signature_to_json_schema(sig),
-                        })
-                    elif direction == "out":
-                        out_type = sig
-                        out_schema = dbus_signature_to_json_schema(sig)
-
-                # Register method after processing all args (handles void methods).
-                # For overloaded methods, keep the variant with the most parameters.
-                existing = registry["methods"].get(name)
-                if existing is None or len(in_args) > len(existing["args"]):
-                    registry["methods"][name] = {
-                        "args": in_args,
-                        "return_type": out_type,
-                        "return_schema": out_schema or {"type": "null"},
-                    }
-
-            # --- Signals ---
-            for signal in interface.findall("signal"):
-                name = signal.get("name", "")
-                if not name:
-                    continue
-                args = []
-                for arg in signal.findall("arg"):
-                    sig = arg.get("type", "")
-                    args.append({
-                        "name": arg.get("name", f"arg{len(args)}"),
-                        "type": sig,
-                        "schema": dbus_signature_to_json_schema(sig),
-                    })
-                registry["signals"][name] = {"args": args}
-
+        registry = _extract_interface_data(root)
         _introspection_cache["signal_interface"] = registry
         return registry
 
