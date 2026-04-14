@@ -99,6 +99,16 @@ def connect_signal_interface(
 
     with _reconnect_lock:
         try:
+            # Remove signal receiver from the old bus before replacing it.
+            # Without this, GLib retains a C-level reference to the old bus
+            # keeping its receiver alive alongside the new one, causing every
+            # incoming signal to be delivered N+1 times after N reconnects.
+            if _bus is not None and signal_handler is not None:
+                try:
+                    _bus.remove_signal_receiver(signal_handler, dbus_interface="org.asamk.Signal")
+                except Exception:
+                    pass
+
             _bus = get_bus(config)
             if _bus is None:
                 return False

@@ -7,18 +7,38 @@ Example code for connecting to the signal-websocket-bridge via WebSocket or HTTP
 For one-off commands without maintaining a WebSocket connection:
 
 ```bash
-# Send a message
+# Check version / connectivity
+curl -X POST http://localhost:8765/send \
+  -H "Content-Type: application/json" \
+  -d '{"method": "version"}'
+
+# Send a direct message
 curl -X POST http://localhost:8765/send \
   -H "Content-Type: application/json" \
   -d '{"method": "sendMessage", "params": {"message": "Hello!", "recipients": ["+4915100000000"]}}'
 
-# With authentication
+# Send a group message (groupId is base64-encoded)
+curl -X POST http://localhost:8765/send \
+  -H "Content-Type: application/json" \
+  -d '{"method": "sendGroupMessage", "params": {"message": "Hello group!", "groupId": "<base64-group-id>"}}'
+
+# List all groups
+curl -X POST http://localhost:8765/send \
+  -H "Content-Type: application/json" \
+  -d '{"method": "listGroups"}'
+
+# Get your own phone number
+curl -X POST http://localhost:8765/send \
+  -H "Content-Type: application/json" \
+  -d '{"method": "getSelfNumber"}'
+
+# With authentication enabled
 curl -X POST http://localhost:8765/send \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-secret-token" \
   -d '{"method": "version"}'
 
-# Multi-account mode
+# Multi-account mode (specify which account to use)
 curl -X POST "http://localhost:8765/send?account=+4915100000000" \
   -H "Content-Type: application/json" \
   -d '{"method": "listGroups"}'
@@ -26,7 +46,7 @@ curl -X POST "http://localhost:8765/send?account=+4915100000000" \
 
 ## Python (asyncio)
 
-Basic connection with authentication and message handling:
+Basic connection with authentication, message handling, and auto-retry on reconnect:
 
 ```python
 import asyncio
@@ -35,25 +55,51 @@ import websockets
 
 TOKEN = "your-secret-token"  # omit if no token configured
 
+async def call(ws, pending: dict, method: str, params: dict, req_id: int):
+    """Send a JSON-RPC call and store it as pending so it can be retried on reconnect."""
+    msg = {"id": req_id, "method": method, "params": params}
+    pending[req_id] = msg
+    await ws.send(json.dumps(msg))
+
 async def run():
+    pending = {}  # id -> request, for retry after reconnect
+
     async with websockets.connect("ws://localhost:8765/ws") as ws:
         # Authenticate (skip if no token)
         await ws.send(json.dumps({"auth": TOKEN}))
         assert json.loads(await ws.recv()) == {"auth": "ok"}
 
         # Send a message
-        await ws.send(json.dumps({
-            "id": 1,
-            "method": "sendMessage",
-            "params": {"message": "Hi!", "recipients": ["+4915100000000"]},
-        }))
-        print("send result:", await ws.recv())
+        await call(ws, pending, "sendMessage", {
+            "message": "Hi!", "recipients": ["+4915100000000"],
+        }, req_id=1)
 
-        # Listen for incoming messages
         async for raw in ws:
             event = json.loads(raw)
-            if event.get("signal") == "MessageReceived":
-                print(f"{event['sender']}: {event['message']}")
+
+            # Incoming signal
+            if "signal" in event:
+                if event["signal"] == "MessageReceived":
+                    print(f"{event['sender']}: {event['message']}")
+                elif event["signal"] == "Reconnected":
+                    print("Reconnected — retrying pending calls")
+                    for msg in list(pending.values()):
+                        await ws.send(json.dumps(msg))
+                continue
+
+            # RPC response
+            req_id = event.get("id")
+            if "error" in event:
+                if event.get("reconnecting"):
+                    # Transient — keep in pending, will retry after Reconnected
+                    print(f"Request {req_id} failed during reconnect, will retry")
+                else:
+                    # Permanent error — remove from pending
+                    pending.pop(req_id, None)
+                    print(f"Request {req_id} error: {event['error']}")
+            else:
+                pending.pop(req_id, None)  # success — no longer needs retry
+                print(f"Request {req_id} result: {event['result']}")
 
 asyncio.run(run())
 ```
@@ -63,30 +109,55 @@ asyncio.run(run())
 ```js
 const ws = new WebSocket("ws://localhost:8765/ws");
 const TOKEN = "your-secret-token";
+const pending = new Map(); // id -> request, for retry after reconnect
+
+function call(method, params, id) {
+  const msg = { id, method, params };
+  pending.set(id, msg);
+  ws.send(JSON.stringify(msg));
+}
 
 ws.onopen = () => {
-  // Authenticate
   ws.send(JSON.stringify({ auth: TOKEN }));
 };
 
 ws.onmessage = (event) => {
   const data = JSON.parse(event.data);
 
+  // Auth handshake
   if (data.auth === "ok") {
-    // Auth confirmed — send a message
-    ws.send(JSON.stringify({
-      id: 1,
-      method: "sendMessage",
-      params: { message: "Hello!", recipients: ["+4915100000000"] },
-    }));
+    call("sendMessage", { message: "Hello!", recipients: ["+4915100000000"] }, 1);
     return;
   }
 
-  if (data.signal === "MessageReceived") {
-    console.log(`${data.sender}: ${data.message}`);
+  // Incoming signal
+  if (data.signal) {
+    if (data.signal === "MessageReceived") {
+      console.log(`${data.sender}: ${data.message}`);
+    } else if (data.signal === "Disconnected") {
+      console.warn("Bridge lost connection to signal-cli, waiting for Reconnected...");
+    } else if (data.signal === "Reconnected") {
+      console.log("Reconnected — retrying pending calls");
+      for (const msg of pending.values()) {
+        ws.send(JSON.stringify(msg));
+      }
+    }
+    return;
   }
-  if (data.signal === "Disconnected") {
-    console.warn("Bridge lost connection to signal-cli, waiting for Reconnected...");
+
+  // RPC response
+  if (data.error) {
+    if (data.reconnecting) {
+      // Transient — keep in pending, will retry after Reconnected
+      console.warn(`Request ${data.id} failed during reconnect, will retry`);
+    } else {
+      // Permanent error
+      pending.delete(data.id);
+      console.error(`Request ${data.id} error:`, data.error);
+    }
+  } else {
+    pending.delete(data.id); // success
+    console.log(`Request ${data.id} result:`, data.result);
   }
 };
 ```

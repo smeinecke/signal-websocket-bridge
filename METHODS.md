@@ -4,6 +4,23 @@ Complete reference for all JSON-RPC methods available via the WebSocket interfac
 
 > **Note:** `groupId` fields always use **base64-encoded strings** in JSON (decoded to `ay` byte arrays before the DBus call). Timestamps are milliseconds since epoch.
 
+## Error handling and reconnection
+
+Every response has either a `result` or an `error` field. When the bridge loses its DBus
+connection to signal-cli, any in-flight call returns an error with `"reconnecting": true`:
+
+```json
+{"id": 1, "error": "org.freedesktop.DBus.Error.ServiceUnknown: ...", "reconnecting": true}
+{"signal": "Disconnected"}
+{"signal": "Reconnected"}
+```
+
+**Client behaviour:**
+
+- If `error` has no `reconnecting` field → permanent error (bad params, unknown method). Do not retry.
+- If `"reconnecting": true` → the bridge is auto-reconnecting. Wait for `{"signal": "Reconnected"}`, then retry the same call.
+- `{"signal": "Disconnected"}` and `{"signal": "Reconnected"}` are broadcast to **all** connected WebSocket clients so passive listeners can track connection state.
+
 ## Messaging
 
 | Method | Required params | Optional params | Returns |
