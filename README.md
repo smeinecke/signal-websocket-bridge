@@ -32,17 +32,7 @@ release daily and rebuilds/publishes images automatically with that version.
 
 ### Quick start
 
-```bash
-# Pull the image
-docker pull ghcr.io/smeinecke/signal-websocket-bridge:latest
-
-# Run with docker-compose (recommended)
-docker compose up -d
-```
-
-### Docker Compose example
-
-See `docker-compose.yml`:
+#### 1. Create a `docker-compose.yml`
 
 ```yaml
 services:
@@ -53,7 +43,6 @@ services:
       - SIGNAL_WS_PORT=8765
       - SIGNAL_DBUS_BUS=session
       - SIGNAL_WS_TOKEN=your-secret-token   # required when exposed beyond localhost
-      - SIGNAL_ACCOUNT=+4915...             # required for multi-account signal-cli
       - SIGNAL_LOG_LEVEL=INFO
     volumes:
       - signal-cli-data:/var/lib/signal-cli
@@ -63,6 +52,62 @@ services:
 volumes:
   signal-cli-data:
 ```
+
+#### 2. Start the container
+
+```bash
+docker compose up -d
+```
+
+#### 3. Register or link your Signal account
+
+**Option A: Register a new phone number**
+```bash
+# Replace +4915... with your actual phone number
+docker compose exec signal-bridge signal-cli -a +4915... register
+
+# Verify with the code received via SMS/voice call
+docker compose exec signal-bridge signal-cli -a +4915... verify 123456
+```
+
+**Option B: Link to an existing Signal device** (recommended for most users)
+```bash
+# Generate a linking URI (shows as QR code data)
+docker compose exec signal-bridge signal-cli link
+
+# Or output as URL for manual linking
+docker compose exec signal-bridge signal-cli link --uri
+```
+
+Then scan the QR code with your Signal mobile app: **Settings → Linked Devices → Link New Device**.
+
+#### 4. Test the WebSocket connection
+
+```bash
+# Using websocat (install with: cargo install websocat)
+websocat ws://localhost:8765/ws
+
+# Or using curl for the health endpoint
+curl http://localhost:8765/health
+```
+
+**With authentication enabled:**
+```bash
+# Send auth as first message
+websocat ws://localhost:8765/ws
+{"auth": "your-secret-token"}
+# Wait for {"auth": "ok"} response, then:
+{"id": 1, "method": "listGroups"}
+```
+
+#### 5. Send a test message
+
+```bash
+# Via JSON-RPC over WebSocket
+echo '{"id": 1, "method": "sendMessage", "params": {"message": "Hello from Docker!", "recipients": ["+4915..."]}}' | websocat ws://localhost:8765/ws
+```
+
+**Full walkthrough:** See [CLIENT_EXAMPLES.md](CLIENT_EXAMPLES.md) for complete code examples in Python and JavaScript.
 
 ### Building locally
 
