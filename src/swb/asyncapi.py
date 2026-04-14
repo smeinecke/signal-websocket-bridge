@@ -136,7 +136,15 @@ def introspect_signal_interface(signal_object) -> dict[str, Any]:
         xml_str = introspectable.Introspect()
         root = ET.fromstring(xml_str)
         registry = _extract_interface_data(root)
+
+        # Don't cache empty results - signal-cli may still be initializing
+        if not registry.get("methods") and not registry.get("signals"):
+            logging.debug("DBus introspection returned empty registry (signal-cli may be initializing)")
+            logging.debug(f"Introspection XML: {xml_str[:500]}...")
+            return registry
+
         _introspection_cache["signal_interface"] = registry
+        logging.info(f"DBus introspection cached: {len(registry.get('methods', {}))} methods, {len(registry.get('signals', {}))} signals")
         return registry
 
     except Exception as exc:
