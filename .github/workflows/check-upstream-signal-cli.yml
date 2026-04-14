@@ -13,6 +13,8 @@ permissions:
 jobs:
   check-and-trigger:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Resolve latest upstream signal-cli version
         id: upstream

@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
     outputs:
       signal_cli_version: ${{ steps.resolve.outputs.signal_cli_version }}
     steps:
