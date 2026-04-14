@@ -201,6 +201,7 @@ class TestIntrospectSignalInterfaceRealXML:
 
         with patch("swb.asyncapi.dbus.Interface", return_value=mock_introspectable):
             from swb.asyncapi import introspect_signal_interface
+
             registry = introspect_signal_interface(mock_signal_object)
 
         assert "sendMessage" in registry["methods"]

@@ -374,10 +374,10 @@ class TestBroadcastExceptions:
         """Test broadcast handles exception during send."""
         from unittest.mock import AsyncMock
 
-        from swb.dbus_client import _broadcast_to_clients
-
         # Save original state
         import swb.dbus_client as dc
+        from swb.dbus_client import _broadcast_to_clients
+
         original_clients = dc._connected_clients
         original_lock = dc._clients_lock
         original_loop = dc._loop
