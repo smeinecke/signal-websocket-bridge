@@ -1,6 +1,28 @@
 # Client Examples
 
-Example code for connecting to the signal-websocket-bridge via WebSocket.
+Example code for connecting to the signal-websocket-bridge via WebSocket or HTTP.
+
+## Simple HTTP POST (curl)
+
+For one-off commands without maintaining a WebSocket connection:
+
+```bash
+# Send a message
+curl -X POST http://localhost:8765/send \
+  -H "Content-Type: application/json" \
+  -d '{"method": "sendMessage", "params": {"message": "Hello!", "recipients": ["+4915100000000"]}}'
+
+# With authentication
+curl -X POST http://localhost:8765/send \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secret-token" \
+  -d '{"method": "version"}'
+
+# Multi-account mode
+curl -X POST "http://localhost:8765/send?account=+4915100000000" \
+  -H "Content-Type: application/json" \
+  -d '{"method": "listGroups"}'
+```
 
 ## Python (asyncio)
 
@@ -98,4 +120,34 @@ async def echo_bot():
             await ws.send(json.dumps({"id": 0, "method": method, "params": params}))
 
 asyncio.run(echo_bot())
+```
+
+## Python (HTTP requests)
+
+For simple synchronous calls without WebSocket overhead:
+
+```python
+import requests
+
+# Simple message send
+response = requests.post("http://localhost:8765/send", json={
+    "method": "sendMessage",
+    "params": {"message": "Hello!", "recipients": ["+4915100000000"]}
+})
+print(response.json())
+
+# With authentication
+response = requests.post(
+    "http://localhost:8765/send",
+    headers={"Authorization": "Bearer your-secret-token"},
+    json={"method": "version"}
+)
+print(response.json())
+
+# Multi-account mode
+response = requests.post(
+    "http://localhost:8765/send?account=+4915100000000",
+    json={"method": "listGroups"}
+)
+print(response.json())
 ```

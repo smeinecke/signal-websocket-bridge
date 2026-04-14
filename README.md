@@ -206,6 +206,7 @@ All flags can also be set via environment variables:
 |----------|--------|-------------|
 | `/ws` | `GET` (WS upgrade) | WebSocket endpoint |
 | `/` | `GET` (WS upgrade) | Alias for `/ws` |
+| `/send` | `POST` | Send one-time commands synchronously (no WebSocket needed) |
 | `/health` | `GET` | Liveness/readiness probe |
 | `/asyncapi.json` | `GET` | Auto-generated AsyncAPI 2.6 spec (JSON) |
 | `/asyncapi.yaml` | `GET` | Auto-generated AsyncAPI 2.6 spec (YAML) |
@@ -220,6 +221,42 @@ curl http://localhost:8765/health
 
 # Use as Docker HEALTHCHECK or Kubernetes readiness probe
 ```
+
+### `/send`
+
+Send one-time commands synchronously without establishing a WebSocket connection. Useful for simple scripts, health checks, or fire-and-forget operations.
+
+**Request format:**
+```bash
+curl -X POST http://localhost:8765/send \
+  -H "Content-Type: application/json" \
+  -d '{"method": "sendMessage", "params": {"message": "Hello!", "recipients": ["+4915100000000"]}}'
+```
+
+**With authentication enabled:**
+```bash
+curl -X POST http://localhost:8765/send \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secret-token" \
+  -d '{"method": "version"}'
+```
+
+**With multi-account mode (`?account=` query param):**
+```bash
+curl -X POST "http://localhost:8765/send?account=+4915100000000" \
+  -H "Content-Type: application/json" \
+  -d '{"method": "listGroups"}'
+```
+
+**Response format:**
+```json
+{"id": null, "result": {"timestamp": 1713000000000}}
+```
+
+The `id` field is echoed from the request if provided. Errors are returned with appropriate HTTP status codes:
+- `400` - Invalid JSON or missing method
+- `401` - Unauthorized (missing or invalid token)
+- `500` - DBus or internal error
 
 ### `/asyncapi.json` / `/asyncapi.yaml`
 

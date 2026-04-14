@@ -149,6 +149,47 @@ class WebSocketServer:
 
         return ws
 
+    async def send_handler(self, request: web.Request) -> web.Response:
+        """POST endpoint for synchronous one-time commands.
+
+        Accepts an optional ?account=+4915... query parameter to route calls
+        to a specific Signal account when signal-cli runs in multi-account mode.
+        """
+        peer = request.remote or "unknown"
+
+        # Parse request body first
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            return web.json_response({"error": "invalid JSON", "detail": str(exc)}, status=400)
+
+        # Token authentication (if configured)
+        if self.config.token:
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer ") or auth_header[7:] != self.config.token:
+                logging.warning(f"Auth failed from {peer}: invalid or missing token")
+                return web.json_response({"error": "unauthorized"}, status=401)
+
+        account = request.rel_url.query.get("account") or None
+        dispatch = self.dispatch_factory(account)
+        if account:
+            logging.debug(f"POST /send from {peer} using account {account}")
+
+        method = body.get("method", "")
+        params = body.get("params", {})
+        req_id = body.get("id")
+
+        if not method:
+            return web.json_response({"error": "missing method"}, status=400)
+
+        try:
+            result = dispatch(method, params)
+            return web.json_response({"id": req_id, "result": result})
+        except DBusException as exc:
+            return web.json_response({"id": req_id, "error": str(exc)}, status=500)
+        except (KeyError, TypeError, ValueError) as exc:
+            return web.json_response({"id": req_id, "error": f"bad params: {exc}"}, status=400)
+
     def init_app(self) -> web.Application:
         """Initialize aiohttp application with routes."""
         app = web.Application()
@@ -157,6 +198,7 @@ class WebSocketServer:
         app.router.add_get("/asyncapi.yaml", self.asyncapi_yaml_handler)
         app.router.add_get("/ws", self.websocket_handler)
         app.router.add_get("/", self.websocket_handler)
+        app.router.add_post("/send", self.send_handler)
         return app
 
     async def run(self):
