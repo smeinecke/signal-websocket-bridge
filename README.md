@@ -1,6 +1,6 @@
-# signal-websocket-bridge
+# Signal WebSocket Bridge
 
-A WebSocket bridge for [signal-cli](https://github.com/AsamK/signal-cli) that exposes incoming Signal messages as push events (via DBus) and allows sending messages via a simple JSON-RPC interface.
+A WebSocket bridge for [signal-cli](https://github.com/AsamK/signal-cli) that provides real-time, push-based access to Signal messages via DBus. Unlike signal-cli's built-in JSON-RPC server, this bridge uses the DBus interface to deliver messages instantly without polling, while still allowing you to send messages through a simple JSON request/response interface.
 
 ## Architecture
 
@@ -8,10 +8,10 @@ A WebSocket bridge for [signal-cli](https://github.com/AsamK/signal-cli) that ex
 flowchart TD
     Signal[Signal Network] <---> signal-cli[signal-cli<br/>DBus daemon]
     signal-cli <--->|DBus<br/>signals & method calls| swb[swb<br/>signal-websocket-bridge]
-    swb <--->|WebSocket<br/>JSON-RPC| App[Your application / bot]
+    swb <--->|WebSocket<br/>JSON| App[Your application / bot]
 ```
 
-Incoming messages are pushed to all connected WebSocket clients the moment signal-cli fires a DBus signal — no polling involved.
+Incoming messages are pushed to all connected WebSocket clients the moment signal-cli fires a DBus signal - no polling involved.
 
 ## Docker
 
@@ -103,7 +103,7 @@ websocat ws://localhost:8765/ws
 #### 5. Send a test message
 
 ```bash
-# Via JSON-RPC over WebSocket
+# Via WebSocket
 echo '{"id": 1, "method": "sendMessage", "params": {"message": "Hello from Docker!", "recipients": ["+4915..."]}}' | websocat ws://localhost:8765/ws
 ```
 
@@ -188,7 +188,7 @@ All flags can also be set via environment variables:
 | `SIGNAL_DBUS_BUS` | `--system` / `--session` | `system` | DBus bus to connect to (`session` in Docker image/compose defaults) |
 | `SIGNAL_WS_HOST` | `--host` | `localhost` | WebSocket listen address |
 | `SIGNAL_WS_PORT` | `--port` | `8765` | WebSocket listen port |
-| `SIGNAL_WS_TOKEN` | `--token` | _(none)_ | Auth token — required if exposed beyond localhost |
+| `SIGNAL_WS_TOKEN` | `--token` | _(none)_ | Auth token - required if exposed beyond localhost |
 | `SIGNAL_ACCOUNT` | `--account` | _(none)_ | Phone number for multi-account mode (e.g. `+4915...`) |
 | `SIGNAL_LOG_LEVEL` | `--log-level` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
@@ -204,7 +204,7 @@ All flags can also be set via environment variables:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/ws` | `GET` (WS upgrade) | WebSocket endpoint for JSON-RPC |
+| `/ws` | `GET` (WS upgrade) | WebSocket endpoint |
 | `/` | `GET` (WS upgrade) | Alias for `/ws` |
 | `/health` | `GET` | Liveness/readiness probe |
 | `/asyncapi.json` | `GET` | Auto-generated AsyncAPI 2.6 spec (JSON) |
@@ -302,7 +302,7 @@ Fired when a recipient's device delivers your message.
 
 ### Sending messages (client → server, request/response)
 
-All requests follow JSON-RPC 2.0 style. The `id` field is echoed back in the response.
+All requests use a simple JSON format with `id`, `method`, and `params` fields. The `id` field is echoed back in the response.
 
 #### Send a 1:1 message
 
@@ -354,6 +354,6 @@ See [METHODS.md](METHODS.md) for the complete method reference including:
 
 See [CLIENT_EXAMPLES.md](CLIENT_EXAMPLES.md) for complete examples in:
 
-- **Python (asyncio)** — Basic connection, authentication, and message handling
-- **JavaScript (Node.js / browser)** — Browser-compatible WebSocket client
-- **Simple echo bot** — Replies to every message with an echo
+- **Python (asyncio)** - Basic connection, authentication, and message handling
+- **JavaScript (Node.js / browser)** - Browser-compatible WebSocket client
+- **Simple echo bot** - Replies to every message with an echo
