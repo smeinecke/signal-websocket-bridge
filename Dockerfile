@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 \
     libgirepository-1.0-1 \
     libgirepository-2.0-0 \
-    libglib2.0-0 \
+    libglib2.0-0t64 \
     libdbus-1-3 \
     dbus-daemon \
     default-jre-headless \

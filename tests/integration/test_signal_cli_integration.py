@@ -129,12 +129,12 @@ class TestSignalCliIntegration:
     def test_signal_cli_daemon_running(self, docker_container):
         """Verify signal-cli daemon process is running inside container."""
         result = subprocess.run(
-            ["docker", "exec", docker_container, "pgrep", "-f", "signal-cli daemon"],
+            ["docker", "exec", docker_container, "supervisorctl", "status", "signal-cli"],
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 0, "signal-cli daemon is not running"
-        assert result.stdout.strip(), "No signal-cli process found"
+        assert result.returncode == 0, f"signal-cli daemon is not running: {result.stdout}"
+        assert "RUNNING" in result.stdout, f"signal-cli not in RUNNING state: {result.stdout}"
 
     def test_dbus_daemon_running(self, docker_container):
         """Verify DBus daemon is running inside container."""
