@@ -9,6 +9,8 @@ WORKDIR /app
 
 # Resolved in CI from the latest upstream release; defaults to latest for local builds.
 ARG SIGNAL_CLI_VERSION=latest
+# Optional: override the download URL entirely (e.g. to use a patched build from a fork).
+ARG SIGNAL_CLI_DOWNLOAD_URL=""
 
 # Install Python runtime, Java (required by signal-cli), and required system libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -32,17 +34,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install signal-cli from upstream Java distribution (works across CPU architectures).
 RUN set -eux; \
-    if [ "$SIGNAL_CLI_VERSION" = "latest" ]; then \
-        SIGNAL_CLI_VERSION="$( \
-            curl -fsSL https://api.github.com/repos/AsamK/signal-cli/releases/latest \
-            | sed -n 's/.*"tag_name": "v\([^"]*\)".*/\1/p' \
-            | head -n1 \
-        )"; \
+    if [ -n "$SIGNAL_CLI_DOWNLOAD_URL" ]; then \
+        curl -fsSL "$SIGNAL_CLI_DOWNLOAD_URL" -o /tmp/signal-cli.tar.gz; \
+    else \
+        if [ "$SIGNAL_CLI_VERSION" = "latest" ]; then \
+            SIGNAL_CLI_VERSION="$( \
+                curl -fsSL https://api.github.com/repos/AsamK/signal-cli/releases/latest \
+                | sed -n 's/.*"tag_name": "v\([^"]*\)".*/\1/p' \
+                | head -n1 \
+            )"; \
+        fi; \
+        test -n "$SIGNAL_CLI_VERSION"; \
+        curl -fsSL "https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_CLI_VERSION}/signal-cli-${SIGNAL_CLI_VERSION}.tar.gz" -o /tmp/signal-cli.tar.gz; \
     fi; \
-    test -n "$SIGNAL_CLI_VERSION"; \
-    curl -fsSL "https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_CLI_VERSION}/signal-cli-${SIGNAL_CLI_VERSION}.tar.gz" -o /tmp/signal-cli.tar.gz; \
+    SIGNAL_CLI_DIR="$(tar -tzf /tmp/signal-cli.tar.gz | head -1 | cut -d/ -f1)"; \
     tar -xzf /tmp/signal-cli.tar.gz -C /opt; \
-    mv "/opt/signal-cli-${SIGNAL_CLI_VERSION}" /opt/signal-cli; \
+    mv "/opt/${SIGNAL_CLI_DIR}" /opt/signal-cli; \
     ln -sf /opt/signal-cli/bin/signal-cli /usr/bin/signal-cli; \
     rm -f /tmp/signal-cli.tar.gz
 
