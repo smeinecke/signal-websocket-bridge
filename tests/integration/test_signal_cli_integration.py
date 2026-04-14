@@ -154,7 +154,7 @@ class TestSignalCliIntegration:
                 "exec",
                 docker_container,
                 "dbus-send",
-                "--bus=unix:path=/run/dbus/session_bus_socket",
+                "--bus=unix:path=/tmp/dbus-session.socket",
                 "--print-reply",
                 "--dest=org.asamk.Signal",
                 "/org/asamk/Signal",

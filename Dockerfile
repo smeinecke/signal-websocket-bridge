@@ -48,7 +48,6 @@ RUN set -eux; \
 
 # Runtime filesystem compatibility
 RUN mkdir -p /var/lib/signal-cli /var/lib/swb \
-    && mkdir -p /run/dbus \
     && mkdir -p /usr/local/bin \
     && ln -sf /usr/bin/python3 /usr/local/bin/python3 \
     && ln -sf /usr/bin/python3 /usr/local/bin/python
