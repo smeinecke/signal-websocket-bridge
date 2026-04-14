@@ -191,3 +191,212 @@ class TestSetupGlibLoop:
         with patch("swb.dbus_client.dbus.mainloop.glib.DBusGMainLoop") as mock_loop:
             setup_glib_loop()
             mock_loop.assert_called_once_with(set_as_default=True)
+
+
+class TestGetInterface:
+    """Test get_interface function."""
+
+    def test_get_interface_raises_when_not_connected(self):
+        """Test get_interface raises when not connected."""
+        # Reset global state
+        import swb.dbus_client as dc
+        from swb.dbus_client import _signal_interface, get_interface
+
+        original = dc._signal_interface
+        dc._signal_interface = None
+
+        try:
+            with pytest.raises(RuntimeError, match="DBus interface not connected"):
+                get_interface()
+        finally:
+            dc._signal_interface = original
+
+
+class TestGetObjectInstance:
+    """Test get_object_instance function."""
+
+    def test_get_object_instance_raises_when_not_connected(self):
+        """Test get_object_instance raises when not connected."""
+        # Reset global state
+        import swb.dbus_client as dc
+        from swb.dbus_client import _signal_object, get_object_instance
+
+        original = dc._signal_object
+        dc._signal_object = None
+
+        try:
+            with pytest.raises(RuntimeError, match="DBus object not connected"):
+                get_object_instance()
+        finally:
+            dc._signal_object = original
+
+
+class TestGetBusInstance:
+    """Test get_bus_instance function."""
+
+    def test_get_bus_instance_raises_when_not_connected(self):
+        """Test get_bus_instance raises when not connected."""
+        # Reset global state
+        import swb.dbus_client as dc
+        from swb.dbus_client import _bus, get_bus_instance
+
+        original = dc._bus
+        dc._bus = None
+
+        try:
+            with pytest.raises(RuntimeError, match="DBus bus not connected"):
+                get_bus_instance()
+        finally:
+            dc._bus = original
+
+
+class TestBroadcastToClientsExtended:
+    """Extended broadcast tests."""
+
+    def test_broadcast_with_clients(self):
+        """Test broadcast with connected clients."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        # Save original state
+        import swb.dbus_client as dc
+        from swb.dbus_client import _broadcast_to_clients, _clients_lock, _connected_clients, _loop
+
+        original_clients = dc._connected_clients
+        original_lock = dc._clients_lock
+        original_loop = dc._loop
+
+        try:
+            # Set up test state
+            dc._connected_clients = set()
+            dc._clients_lock = MagicMock()
+            dc._clients_lock.__enter__ = MagicMock(return_value=None)
+            dc._clients_lock.__exit__ = MagicMock(return_value=None)
+            dc._loop = MagicMock()
+
+            # Add mock client
+            mock_ws = AsyncMock()
+            mock_ws.send_str = AsyncMock()
+            dc._connected_clients.add(mock_ws)
+
+            _broadcast_to_clients({"signal": "test"})
+
+            # Verify loop was called to schedule send
+            dc._loop.call_soon_threadsafe.assert_called()
+        finally:
+            dc._connected_clients = original_clients
+            dc._clients_lock = original_lock
+            dc._loop = original_loop
+
+    def test_broadcast_with_send_method(self):
+        """Test broadcast to client with send method."""
+        from unittest.mock import AsyncMock
+
+        # Save original state
+        import swb.dbus_client as dc
+        from swb.dbus_client import _broadcast_to_clients
+
+        original_clients = dc._connected_clients
+        original_lock = dc._clients_lock
+        original_loop = dc._loop
+
+        try:
+            dc._connected_clients = set()
+            dc._clients_lock = MagicMock()
+            dc._clients_lock.__enter__ = MagicMock(return_value=None)
+            dc._clients_lock.__exit__ = MagicMock(return_value=None)
+            dc._loop = MagicMock()
+
+            # Add mock client without send_str (uses send)
+            mock_ws = AsyncMock()
+            del mock_ws.send_str
+            mock_ws.send = AsyncMock()
+            dc._connected_clients.add(mock_ws)
+
+            _broadcast_to_clients({"signal": "test"})
+
+            dc._loop.call_soon_threadsafe.assert_called()
+        finally:
+            dc._connected_clients = original_clients
+            dc._clients_lock = original_lock
+            dc._loop = original_loop
+
+
+class TestHandleDbusErrorExtended:
+    """Extended DBus error handling tests."""
+
+    def test_connection_error_triggers_reconnect(self):
+        """Test connection error triggers reconnect."""
+        import threading
+
+        # Save original state
+        import swb.dbus_client as dc
+        from swb.dbus_client import _dbus_connected, _reconnect_thread, handle_dbus_error
+
+        original_connected = dc._dbus_connected
+        original_thread = dc._reconnect_thread
+
+        try:
+            dc._dbus_connected = True
+            dc._reconnect_thread = None
+
+            # Create mock DBus exception
+            mock_exc = MagicMock()
+            mock_exc.get_dbus_name.return_value = "org.freedesktop.DBus.Error.ServiceUnknown"
+
+            with patch("swb.dbus_client.dbus.exceptions.DBusException", type(mock_exc)):
+                with pytest.raises(Exception):
+                    handle_dbus_error(mock_exc)
+
+            # Verify disconnected state
+            assert dc._dbus_connected is False
+        finally:
+            dc._dbus_connected = original_connected
+            dc._reconnect_thread = original_thread
+
+    def test_non_connection_error_raised_immediately(self):
+        """Test non-connection errors are raised immediately."""
+        from swb.dbus_client import handle_dbus_error
+
+        # Create mock DBus exception for non-connection error
+        mock_exc = MagicMock()
+        mock_exc.get_dbus_name.return_value = "org.freedesktop.DBus.Error.InvalidArgs"
+
+        with patch("swb.dbus_client.dbus.exceptions.DBusException", type(mock_exc)):
+            with pytest.raises(Exception):
+                handle_dbus_error(mock_exc)
+
+
+class TestBroadcastExceptions:
+    """Test broadcast exception handling."""
+
+    def test_broadcast_exception_during_send(self):
+        """Test broadcast handles exception during send."""
+        from unittest.mock import AsyncMock
+
+        from swb.dbus_client import _broadcast_to_clients
+
+        # Save original state
+        import swb.dbus_client as dc
+        original_clients = dc._connected_clients
+        original_lock = dc._clients_lock
+        original_loop = dc._loop
+
+        try:
+            dc._connected_clients = set()
+            dc._clients_lock = MagicMock()
+            dc._clients_lock.__enter__ = MagicMock(return_value=None)
+            dc._clients_lock.__exit__ = MagicMock(return_value=None)
+            dc._loop = MagicMock()
+
+            # Add mock client that raises exception during send
+            mock_ws = AsyncMock()
+            mock_ws.send_str = AsyncMock(side_effect=Exception("Connection closed"))
+            dc._connected_clients.add(mock_ws)
+
+            # Should not raise
+            _broadcast_to_clients({"signal": "test"})
+        finally:
+            dc._connected_clients = original_clients
+            dc._clients_lock = original_lock
+            dc._loop = original_loop

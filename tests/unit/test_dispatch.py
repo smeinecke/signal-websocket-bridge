@@ -361,3 +361,405 @@ class TestErrorHandling:
         """Test missing required params raises KeyError."""
         with pytest.raises((KeyError, TypeError)):
             dispatcher.dispatch("sendMessage", {})  # Missing required params
+
+
+class TestGroupSubInterfaceHandlers:
+    """Test group sub-interface method handlers."""
+
+    def test_quit_group(self, dispatcher, mock_interface, mock_bus):
+        """Test quitGroup handler."""
+        mock_group_iface = MagicMock()
+        mock_interface.getGroup.return_value = "/org/asamk/Signal/Groups/group1"
+
+        with patch("swb.dispatch.dbus.Interface", return_value=mock_group_iface):
+            result = dispatcher.dispatch(
+                "quitGroup",
+                {"groupId": "Z3JvdXAxMjM="},
+            )
+
+        assert result is None
+        mock_group_iface.quitGroup.assert_called_once()
+
+    def test_add_group_members(self, dispatcher, mock_interface, mock_bus):
+        """Test addGroupMembers handler."""
+        mock_group_iface = MagicMock()
+        mock_interface.getGroup.return_value = "/org/asamk/Signal/Groups/group1"
+
+        with patch("swb.dispatch.dbus.Interface", return_value=mock_group_iface):
+            result = dispatcher.dispatch(
+                "addGroupMembers",
+                {"groupId": "Z3JvdXAxMjM=", "recipients": ["+491234567890"]},
+            )
+
+        assert result is None
+        mock_group_iface.addMembers.assert_called_once_with(["+491234567890"])
+
+    def test_remove_group_members(self, dispatcher, mock_interface, mock_bus):
+        """Test removeGroupMembers handler."""
+        mock_group_iface = MagicMock()
+        mock_interface.getGroup.return_value = "/org/asamk/Signal/Groups/group1"
+
+        with patch("swb.dispatch.dbus.Interface", return_value=mock_group_iface):
+            result = dispatcher.dispatch(
+                "removeGroupMembers",
+                {"groupId": "Z3JvdXAxMjM=", "recipients": ["+491234567890"]},
+            )
+
+        assert result is None
+        mock_group_iface.removeMembers.assert_called_once_with(["+491234567890"])
+
+    def test_add_group_admins(self, dispatcher, mock_interface, mock_bus):
+        """Test addGroupAdmins handler."""
+        mock_group_iface = MagicMock()
+        mock_interface.getGroup.return_value = "/org/asamk/Signal/Groups/group1"
+
+        with patch("swb.dispatch.dbus.Interface", return_value=mock_group_iface):
+            result = dispatcher.dispatch(
+                "addGroupAdmins",
+                {"groupId": "Z3JvdXAxMjM=", "recipients": ["+491234567890"]},
+            )
+
+        assert result is None
+        mock_group_iface.addAdmins.assert_called_once_with(["+491234567890"])
+
+    def test_remove_group_admins(self, dispatcher, mock_interface, mock_bus):
+        """Test removeGroupAdmins handler."""
+        mock_group_iface = MagicMock()
+        mock_interface.getGroup.return_value = "/org/asamk/Signal/Groups/group1"
+
+        with patch("swb.dispatch.dbus.Interface", return_value=mock_group_iface):
+            result = dispatcher.dispatch(
+                "removeGroupAdmins",
+                {"groupId": "Z3JvdXAxMjM=", "recipients": ["+491234567890"]},
+            )
+
+        assert result is None
+        mock_group_iface.removeAdmins.assert_called_once_with(["+491234567890"])
+
+    def test_enable_group_link(self, dispatcher, mock_interface, mock_bus):
+        """Test enableGroupLink handler."""
+        mock_group_iface = MagicMock()
+        mock_interface.getGroup.return_value = "/org/asamk/Signal/Groups/group1"
+
+        with patch("swb.dispatch.dbus.Interface", return_value=mock_group_iface):
+            result = dispatcher.dispatch(
+                "enableGroupLink",
+                {"groupId": "Z3JvdXAxMjM=", "requiresApproval": True},
+            )
+
+        assert result is None
+        mock_group_iface.enableLink.assert_called_once_with(True)
+
+    def test_disable_group_link(self, dispatcher, mock_interface, mock_bus):
+        """Test disableGroupLink handler."""
+        mock_group_iface = MagicMock()
+        mock_interface.getGroup.return_value = "/org/asamk/Signal/Groups/group1"
+
+        with patch("swb.dispatch.dbus.Interface", return_value=mock_group_iface):
+            result = dispatcher.dispatch(
+                "disableGroupLink",
+                {"groupId": "Z3JvdXAxMjM="},
+            )
+
+        assert result is None
+        mock_group_iface.disableLink.assert_called_once()
+
+    def test_reset_group_link(self, dispatcher, mock_interface, mock_bus):
+        """Test resetGroupLink handler."""
+        mock_group_iface = MagicMock()
+        mock_interface.getGroup.return_value = "/org/asamk/Signal/Groups/group1"
+
+        with patch("swb.dispatch.dbus.Interface", return_value=mock_group_iface):
+            result = dispatcher.dispatch(
+                "resetGroupLink",
+                {"groupId": "Z3JvdXAxMjM="},
+            )
+
+        assert result is None
+        mock_group_iface.resetLink.assert_called_once()
+
+
+class TestMoreContactHandlers:
+    """Additional contact handler tests."""
+
+    def test_get_contact_number(self, dispatcher, mock_interface):
+        """Test getContactNumber handler."""
+        mock_interface.getContactNumber.return_value = dbus.Array([dbus.String("+491234567890")])
+
+        result = dispatcher.dispatch(
+            "getContactNumber",
+            {"name": "John Doe"},
+        )
+
+        assert result == {"numbers": ["+491234567890"]}
+
+    def test_set_contact_name(self, dispatcher, mock_interface):
+        """Test setContactName handler."""
+        result = dispatcher.dispatch(
+            "setContactName",
+            {"number": "+491234567890", "name": "John Doe"},
+        )
+
+        assert result is None
+        mock_interface.setContactName.assert_called_once_with("+491234567890", "John Doe")
+
+    def test_delete_contact(self, dispatcher, mock_interface):
+        """Test deleteContact handler."""
+        result = dispatcher.dispatch(
+            "deleteContact",
+            {"number": "+491234567890"},
+        )
+
+        assert result is None
+        mock_interface.deleteContact.assert_called_once_with("+491234567890")
+
+    def test_delete_recipient(self, dispatcher, mock_interface):
+        """Test deleteRecipient handler."""
+        result = dispatcher.dispatch(
+            "deleteRecipient",
+            {"number": "+491234567890"},
+        )
+
+        assert result is None
+        mock_interface.deleteRecipient.assert_called_once_with("+491234567890")
+
+    def test_list_numbers(self, dispatcher, mock_interface):
+        """Test listNumbers handler."""
+        mock_interface.listNumbers.return_value = dbus.Array([dbus.String("+491234567890")])
+
+        result = dispatcher.dispatch("listNumbers", {})
+
+        assert result == {"numbers": ["+491234567890"]}
+
+    def test_set_expiration_timer(self, dispatcher, mock_interface):
+        """Test setExpirationTimer handler."""
+        result = dispatcher.dispatch(
+            "setExpirationTimer",
+            {"number": "+491234567890", "expiration": 86400},
+        )
+
+        assert result is None
+        mock_interface.setExpirationTimer.assert_called_once()
+
+
+class TestMoreMessagingHandlers:
+    """Additional messaging handler tests."""
+
+    def test_send_viewed_receipt(self, dispatcher, mock_interface):
+        """Test sendViewedReceipt handler."""
+        result = dispatcher.dispatch(
+            "sendViewedReceipt",
+            {
+                "recipient": "+491234567890",
+                "targetSentTimestamps": [1234567890000],
+            },
+        )
+
+        assert result is None
+        mock_interface.sendViewedReceipt.assert_called_once()
+
+    def test_send_typing_start(self, dispatcher, mock_interface):
+        """Test sendTyping with start."""
+        result = dispatcher.dispatch(
+            "sendTyping",
+            {"recipient": "+491234567890", "stop": False},
+        )
+
+        assert result is None
+        mock_interface.sendTyping.assert_called_once_with("+491234567890", False)
+
+    def test_send_typing_stop(self, dispatcher, mock_interface):
+        """Test sendTyping with stop."""
+        result = dispatcher.dispatch(
+            "sendTyping",
+            {"recipient": "+491234567890", "stop": True},
+        )
+
+        assert result is None
+        mock_interface.sendTyping.assert_called_once_with("+491234567890", True)
+
+    def test_send_end_session(self, dispatcher, mock_interface):
+        """Test sendEndSessionMessage handler."""
+        result = dispatcher.dispatch(
+            "sendEndSessionMessage",
+            {"recipients": ["+491234567890"]},
+        )
+
+        assert result is None
+        mock_interface.sendEndSessionMessage.assert_called_once_with(["+491234567890"])
+
+    def test_send_payment_notification(self, dispatcher, mock_interface):
+        """Test sendPaymentNotification handler."""
+        mock_interface.sendPaymentNotification.return_value = dbus.Int64(1234567890123)
+
+        result = dispatcher.dispatch(
+            "sendPaymentNotification",
+            {
+                "receipt": "cmVjZWlwdA==",  # base64 of "receipt"
+                "note": "Payment note",
+                "recipient": "+491234567890",
+            },
+        )
+
+        assert result == {"timestamp": 1234567890123}
+
+    def test_send_remote_delete(self, dispatcher, mock_interface):
+        """Test sendRemoteDeleteMessage handler."""
+        mock_interface.sendRemoteDeleteMessage.return_value = dbus.Int64(1234567890123)
+
+        result = dispatcher.dispatch(
+            "sendRemoteDeleteMessage",
+            {
+                "targetSentTimestamp": 1234567890000,
+                "recipients": ["+491234567890"],
+            },
+        )
+
+        assert result == {"timestamp": 1234567890123}
+
+
+class TestIdentityHandlers:
+    """Test identity method handlers."""
+
+    def test_list_identities(self, dispatcher, mock_interface):
+        """Test listIdentities handler."""
+        mock_interface.listIdentities.return_value = [
+            dbus.Struct([
+                dbus.ObjectPath("/org/asamk/Signal/Identities/1"),
+                dbus.String("uuid-123"),
+                dbus.String("+491234567890"),
+            ]),
+        ]
+
+        result = dispatcher.dispatch("listIdentities", {})
+
+        assert len(result) == 1
+        assert result[0]["uuid"] == "uuid-123"
+
+    def test_trust_identity(self, dispatcher, mock_interface, mock_bus):
+        """Test trustIdentity handler."""
+        mock_identity_iface = MagicMock()
+        mock_interface.getIdentity.return_value = "/org/asamk/Signal/Identities/1"
+
+        with patch("swb.dispatch.dbus.Interface", return_value=mock_identity_iface):
+            result = dispatcher.dispatch(
+                "trustIdentity",
+                {"number": "+491234567890"},
+            )
+
+        assert result is None
+        mock_identity_iface.trust.assert_called_once()
+
+    def test_trust_identity_verified(self, dispatcher, mock_interface, mock_bus):
+        """Test trustIdentityVerified handler."""
+        mock_identity_iface = MagicMock()
+        mock_interface.getIdentity.return_value = "/org/asamk/Signal/Identities/1"
+
+        with patch("swb.dispatch.dbus.Interface", return_value=mock_identity_iface):
+            result = dispatcher.dispatch(
+                "trustIdentityVerified",
+                {"number": "+491234567890", "safetyNumber": "12345678901234567890"},
+            )
+
+        assert result is None
+        mock_identity_iface.trustVerified.assert_called_once_with("12345678901234567890")
+
+
+class TestMoreDeviceHandlers:
+    """Additional device handler tests."""
+
+    def test_send_contacts(self, dispatcher, mock_interface):
+        """Test sendContacts handler."""
+        result = dispatcher.dispatch("sendContacts", {})
+
+        assert result is None
+        mock_interface.sendContacts.assert_called_once()
+
+    def test_send_sync_request(self, dispatcher, mock_interface):
+        """Test sendSyncRequest handler."""
+        result = dispatcher.dispatch("sendSyncRequest", {})
+
+        assert result is None
+        mock_interface.sendSyncRequest.assert_called_once()
+
+
+class TestMoreGroupHandlers:
+    """Additional group handler tests."""
+
+    def test_send_group_message_reaction(self, dispatcher, mock_interface):
+        """Test sendGroupMessageReaction handler."""
+        mock_interface.sendGroupMessageReaction.return_value = dbus.Int64(1234567890123)
+
+        result = dispatcher.dispatch(
+            "sendGroupMessageReaction",
+            {
+                "emoji": "👍",
+                "remove": False,
+                "targetAuthor": "+491234567890",
+                "targetSentTimestamp": 1234567890000,
+                "groupId": "Z3JvdXAxMjM=",
+            },
+        )
+
+        assert result == {"timestamp": 1234567890123}
+
+    def test_send_group_remote_delete(self, dispatcher, mock_interface):
+        """Test sendGroupRemoteDeleteMessage handler."""
+        mock_interface.sendGroupRemoteDeleteMessage.return_value = dbus.Int64(1234567890123)
+
+        result = dispatcher.dispatch(
+            "sendGroupRemoteDeleteMessage",
+            {
+                "targetSentTimestamp": 1234567890000,
+                "groupId": "Z3JvdXAxMjM=",
+            },
+        )
+
+        assert result == {"timestamp": 1234567890123}
+
+    def test_send_group_typing(self, dispatcher, mock_interface):
+        """Test sendGroupTyping handler."""
+        result = dispatcher.dispatch(
+            "sendGroupTyping",
+            {"groupId": "Z3JvdXAxMjM=", "stop": True},
+        )
+
+        assert result is None
+        mock_interface.sendGroupTyping.assert_called_once()
+
+    def test_join_group(self, dispatcher, mock_interface):
+        """Test joinGroup handler."""
+        result = dispatcher.dispatch(
+            "joinGroup",
+            {"inviteURI": "sgnl://linkdevice?uuid=abc123"},
+        )
+
+        assert result is None
+        mock_interface.joinGroup.assert_called_once_with("sgnl://linkdevice?uuid=abc123")
+
+
+class TestIsRegisteredNoParams:
+    """Test isRegistered with no parameters."""
+
+    def test_is_registered_no_params(self, dispatcher, mock_interface):
+        """Test isRegistered with no params at all."""
+        mock_interface.isRegistered.return_value = dbus.Boolean(True)
+
+        result = dispatcher.dispatch("isRegistered", {})
+
+        assert result == {"result": True}
+        mock_interface.isRegistered.assert_called_once_with()
+
+
+class TestDispatchHandlerNotFound:
+    """Test dispatch when handler is not found."""
+
+    def test_dispatch_handler_not_found(self, dispatcher):
+        """Test dispatch raises when handler is None."""
+        # This tests line 157 - when handler is None after getting from _handlers
+        # We need to mock _handlers to return None for a valid method enum
+        from unittest.mock import patch
+
+        with patch.object(dispatcher, "_handlers", {}):
+            with pytest.raises(ValueError, match="no handler for method"):
+                dispatcher.dispatch("sendMessage", {"message": "test", "recipients": ["+123"]})

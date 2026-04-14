@@ -164,3 +164,116 @@ class TestGenerateAsyncapiSpec:
             spec = generate_asyncapi_spec(mock_config, mock_signal_object)
 
         assert "MessageReceived_signal" in spec["components"]["schemas"]
+
+
+class TestIntrospectSignalInterfaceRealXML:
+    """Test DBus introspection with real XML parsing."""
+
+    def test_introspect_real_xml(self, mock_signal_object):
+        """Test introspection with real XML parsing."""
+        from swb.asyncapi import _introspection_cache
+
+        # Clear cache first
+        _introspection_cache.clear()
+
+        mock_introspectable = MagicMock()
+        mock_introspectable.Introspect.return_value = """<?xml version="1.0" ?>
+        <node>
+            <interface name="org.asamk.Signal">
+                <method name="sendMessage">
+                    <arg direction="in" type="s" name="message"/>
+                    <arg direction="in" type="as" name="attachments"/>
+                    <arg direction="in" type="as" name="recipients"/>
+                    <arg direction="out" type="x"/>
+                </method>
+                <method name="version">
+                    <arg direction="out" type="s"/>
+                </method>
+                <signal name="MessageReceived">
+                    <arg type="x" name="timestamp"/>
+                    <arg type="s" name="sender"/>
+                </signal>
+                <signal name="UnknownSignal">
+                    <arg type="s" name="data"/>
+                </signal>
+            </interface>
+        </node>"""
+
+        with patch("swb.asyncapi.dbus.Interface", return_value=mock_introspectable):
+            from swb.asyncapi import introspect_signal_interface
+            registry = introspect_signal_interface(mock_signal_object)
+
+        assert "sendMessage" in registry["methods"]
+        assert "version" in registry["methods"]
+        assert "MessageReceived" in registry["signals"]
+        assert "UnknownSignal" in registry["signals"]
+
+    def test_introspect_exception_handling(self, mock_signal_object):
+        """Test introspection exception handling."""
+        from swb.asyncapi import _introspection_cache, introspect_signal_interface
+
+        # Clear cache first
+        _introspection_cache.clear()
+
+        with patch("swb.asyncapi.dbus.Interface", side_effect=Exception("DBus error")):
+            with patch("swb.asyncapi.logging") as mock_logging:
+                registry = introspect_signal_interface(mock_signal_object)
+
+        assert registry == {"methods": {}, "signals": {}}
+        mock_logging.warning.assert_called()
+
+    def test_introspect_cache_clear(self, mock_signal_object):
+        """Test introspection cache can be cleared and repopulated."""
+        from swb.asyncapi import _introspection_cache, introspect_signal_interface
+
+        # Clear and populate cache
+        _introspection_cache.clear()
+        _introspection_cache["signal_interface"] = {"methods": {"cached": {}}, "signals": {}}
+
+        registry = introspect_signal_interface(mock_signal_object)
+        assert "cached" in registry["methods"]
+
+
+class TestGenerateAsyncapiSpecExtended:
+    """Extended AsyncAPI spec generation tests."""
+
+    def test_known_signal_schema(self, mock_config, mock_signal_object):
+        """Test that known signals use static schemas."""
+        from swb.asyncapi import generate_asyncapi_spec
+
+        with patch("swb.asyncapi.introspect_signal_interface") as mock_introspect:
+            mock_introspect.return_value = {
+                "methods": {},
+                "signals": {
+                    "MessageReceived": {"args": []},
+                    "SyncMessageReceived": {"args": []},
+                    "ReceiptReceived": {"args": []},
+                },
+            }
+
+            spec = generate_asyncapi_spec(mock_config, mock_signal_object)
+
+        # Known signals should have structured schemas
+        assert "properties" in spec["components"]["schemas"]["MessageReceived_signal"]
+        assert "properties" in spec["components"]["schemas"]["SyncMessageReceived_signal"]
+        assert "properties" in spec["components"]["schemas"]["ReceiptReceived_signal"]
+
+    def test_unknown_signal_fallback(self, mock_config, mock_signal_object):
+        """Test unknown signals use generic fallback schema."""
+        from swb.asyncapi import generate_asyncapi_spec
+
+        with patch("swb.asyncapi.introspect_signal_interface") as mock_introspect:
+            mock_introspect.return_value = {
+                "methods": {},
+                "signals": {
+                    "CustomSignal": {"args": [{"name": "data", "type": "s", "schema": {"type": "string"}}]},
+                },
+            }
+
+            spec = generate_asyncapi_spec(mock_config, mock_signal_object)
+
+        # Unknown signal should have generic schema
+        schema = spec["components"]["schemas"]["CustomSignal_signal"]
+        assert schema["type"] == "object"
+        assert "signal" in schema["properties"]
+        assert "args" in schema["properties"]

@@ -1,12 +1,13 @@
 """Tests for swb.signals module."""
 
 import base64
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 dbus = pytest.importorskip("dbus")
 
-from swb.signals import serialize_signal
+from swb.signals import create_signal_handler, serialize_signal
 
 
 class TestSerializeSignal:
@@ -96,3 +97,72 @@ class TestSerializeSignal:
 
         assert result["signal"] == "MessageReceived"
         assert "args" in result  # Falls back to generic
+
+
+class TestCreateSignalHandler:
+    """Test create_signal_handler function."""
+
+    def test_handler_creation(self):
+        """Test that handler can be created."""
+        clients = set()
+        lock = MagicMock()
+        lock.__enter__ = MagicMock(return_value=None)
+        lock.__exit__ = MagicMock(return_value=None)
+        loop = MagicMock()
+
+        handler = create_signal_handler(clients, lock, loop)
+        assert callable(handler)
+
+    def test_handler_with_ws_send_str(self):
+        """Test handler with WebSocket that has send_str method."""
+        clients = set()
+        lock = MagicMock()
+        lock.__enter__ = MagicMock(return_value=None)
+        lock.__exit__ = MagicMock(return_value=None)
+        loop = MagicMock()
+
+        handler = create_signal_handler(clients, lock, loop)
+
+        # Add mock WebSocket client
+        mock_ws = AsyncMock()
+        mock_ws.send_str = AsyncMock()
+        clients.add(mock_ws)
+
+        # Call handler
+        handler(
+            dbus.Int64(1234567890123),
+            dbus.String("+491234567890"),
+            dbus.Array([dbus.Byte(b) for b in b"group123"], signature="y"),
+            dbus.String("Hello"),
+            dbus.Array([dbus.String("/path")]),
+            member="MessageReceived",
+        )
+
+        # Verify send_str was scheduled
+        loop.call_soon_threadsafe.assert_called()
+
+    def test_handler_with_ws_send(self):
+        """Test handler with WebSocket that has send method."""
+        clients = set()
+        lock = MagicMock()
+        lock.__enter__ = MagicMock(return_value=None)
+        lock.__exit__ = MagicMock(return_value=None)
+        loop = MagicMock()
+
+        handler = create_signal_handler(clients, lock, loop)
+
+        # Add mock WebSocket client without send_str (uses send)
+        mock_ws = AsyncMock()
+        del mock_ws.send_str  # Remove send_str attribute
+        mock_ws.send = AsyncMock()
+        clients.add(mock_ws)
+
+        # Call handler
+        handler(
+            dbus.Int64(1234567890123),
+            dbus.String("+491234567890"),
+            member="ReceiptReceived",
+        )
+
+        # Verify send was scheduled
+        loop.call_soon_threadsafe.assert_called()

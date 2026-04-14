@@ -134,6 +134,20 @@ class TestValidateAttachments:
         with pytest.raises(ValueError, match="not a file"):
             validate_attachments([str(tmp_path)])
 
+    def test_attachment_not_readable(self, tmp_path):
+        """Test unreadable file raises ValueError."""
+        file1 = tmp_path / "test1.txt"
+        file1.write_text("content1")
+        # Remove read permission
+        file1.chmod(0o000)
+
+        try:
+            with pytest.raises(ValueError, match="not readable"):
+                validate_attachments([str(file1)])
+        finally:
+            # Restore permissions for cleanup
+            file1.chmod(0o644)
+
 
 class TestDbusSignatureToJsonSchema:
     """Test DBus signature to JSON Schema conversion."""
@@ -179,3 +193,25 @@ class TestDbusSignatureToJsonSchema:
         """Test unknown signature defaults to object."""
         result = dbus_signature_to_json_schema("unknown")
         assert result == {"type": "object"}
+
+    def test_struct_signature(self):
+        """Test struct signature (tuple)."""
+        result = dbus_signature_to_json_schema("(ss)")
+        assert result == {"type": "array", "items": {}}
+
+    def test_array_of_structs_signature(self):
+        """Test array of structs signature."""
+        result = dbus_signature_to_json_schema("a(ss)")
+        assert result == {"type": "array", "items": {"type": "array", "items": {}}}
+
+    def test_dbus_to_native_uint32(self):
+        """Test dbus.UInt32 conversion."""
+        result = dbus_to_native(dbus.UInt32(42))
+        assert result == 42
+        assert isinstance(result, int)
+
+    def test_dbus_to_native_uint64(self):
+        """Test dbus.UInt64 conversion."""
+        result = dbus_to_native(dbus.UInt64(1234567890123))
+        assert result == 1234567890123
+        assert isinstance(result, int)

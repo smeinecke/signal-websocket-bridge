@@ -215,7 +215,11 @@ class TestWebsocketHandlerWithAuth:
 
         with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
             # Simulate timeout
-            with patch("asyncio.wait_for", new=AsyncMock(side_effect=asyncio.TimeoutError())):
+            async def mock_wait_for(awaitable, timeout):
+                awaitable.close()
+                raise asyncio.TimeoutError()
+
+            with patch("asyncio.wait_for", side_effect=mock_wait_for):
                 await server.websocket_handler(mock_request)
 
                 mock_ws.send_str.assert_called_with(json.dumps({"error": "unauthorized", "detail": "auth timeout"}))
@@ -261,3 +265,156 @@ class TestClientTracking:
 
         assert server.connected_clients is external_clients
         assert server.clients_lock is external_lock
+
+
+class TestWebsocketMessageTypes:
+    """Test WebSocket message type handling."""
+
+    async def test_websocket_binary_message(self, server_no_auth, mock_config_no_auth):
+        """Test WebSocket handling of binary message."""
+        server = server_no_auth
+
+        mock_ws = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+
+        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
+            # Binary message should be ignored (not text)
+            mock_ws.receive.side_effect = [
+                MagicMock(type=aiohttp.WSMsgType.BINARY, data=b"binary data"),
+                MagicMock(type=aiohttp.WSMsgType.CLOSED),
+            ]
+            mock_ws.closed = True
+
+            await server.websocket_handler(mock_request)
+
+            # Should not crash
+            assert mock_ws.prepare.called
+
+    async def test_websocket_error_message(self, server_no_auth, mock_config_no_auth):
+        """Test WebSocket handling of error message."""
+        server = server_no_auth
+
+        mock_ws = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+
+        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
+            mock_ws.receive.side_effect = [
+                MagicMock(type=aiohttp.WSMsgType.ERROR),
+            ]
+            mock_ws.exception.return_value = Exception("Test error")
+            mock_ws.closed = True
+
+            await server.websocket_handler(mock_request)
+
+            # Should log error and close
+            assert mock_ws.prepare.called
+
+
+class TestDispatchErrors:
+    """Test WebSocket dispatch error handling."""
+
+    async def test_dispatch_key_error(self, server_no_auth, mock_config_no_auth, mock_dispatch):
+        """Test handling of KeyError from dispatch."""
+        server = server_no_auth
+        mock_dispatch.side_effect = KeyError("missing_key")
+
+        mock_ws = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+
+        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
+            mock_ws.receive.side_effect = [
+                MagicMock(type=aiohttp.WSMsgType.TEXT, data=json.dumps({"id": 1, "method": "test", "params": {}})),
+                MagicMock(type=aiohttp.WSMsgType.CLOSED),
+            ]
+            mock_ws.closed = True
+
+            await server.websocket_handler(mock_request)
+
+            # Should send error response
+            calls = mock_ws.send_str.call_args_list
+            assert len(calls) > 0
+
+    async def test_dispatch_type_error(self, server_no_auth, mock_config_no_auth, mock_dispatch):
+        """Test handling of TypeError from dispatch."""
+        server = server_no_auth
+        mock_dispatch.side_effect = TypeError("type error")
+
+        mock_ws = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+
+        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
+            mock_ws.receive.side_effect = [
+                MagicMock(type=aiohttp.WSMsgType.TEXT, data=json.dumps({"id": 1, "method": "test", "params": {}})),
+                MagicMock(type=aiohttp.WSMsgType.CLOSED),
+            ]
+            mock_ws.closed = True
+
+            await server.websocket_handler(mock_request)
+
+            # Should send error response
+            calls = mock_ws.send_str.call_args_list
+            assert len(calls) > 0
+
+    async def test_dispatch_dbus_exception(self, server_no_auth, mock_config_no_auth, mock_dispatch):
+        """Test handling of DBusException from dispatch."""
+        from swb.websocket_server import DBusException
+
+        server = server_no_auth
+        mock_dispatch.side_effect = DBusException("DBus error")
+
+        mock_ws = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+
+        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
+            mock_ws.receive.side_effect = [
+                MagicMock(type=aiohttp.WSMsgType.TEXT, data=json.dumps({"id": 1, "method": "test", "params": {}})),
+                MagicMock(type=aiohttp.WSMsgType.CLOSED),
+            ]
+            mock_ws.closed = True
+
+            await server.websocket_handler(mock_request)
+
+            # Should send error response
+            calls = mock_ws.send_str.call_args_list
+            assert len(calls) > 0
+
+
+class TestAuthEdgeCases:
+    """Test authentication edge cases."""
+
+    async def test_websocket_auth_invalid_json(self, server_with_auth, mock_config_with_auth):
+        """Test auth with invalid JSON."""
+        server = server_with_auth
+
+        mock_ws = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+
+        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
+            mock_ws.receive.return_value = MagicMock(type=aiohttp.WSMsgType.TEXT, data="not valid json")
+
+            await server.websocket_handler(mock_request)
+
+            mock_ws.send_str.assert_called_with(json.dumps({"error": "unauthorized", "detail": "invalid JSON"}))
+            mock_ws.close.assert_called_once()
+
+    async def test_websocket_auth_non_text_message(self, server_with_auth, mock_config_with_auth):
+        """Test auth with non-text message."""
+        server = server_with_auth
+
+        mock_ws = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+
+        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
+            mock_ws.receive.return_value = MagicMock(type=aiohttp.WSMsgType.BINARY, data=b"binary")
+
+            await server.websocket_handler(mock_request)
+
+            mock_ws.send_str.assert_called_with(json.dumps({"error": "unauthorized", "detail": "expected text auth message"}))
+            mock_ws.close.assert_called_once()
