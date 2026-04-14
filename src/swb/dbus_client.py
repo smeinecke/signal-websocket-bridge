@@ -95,6 +95,7 @@ def connect_signal_interface(
 
             # Clear stale introspection cache so /asyncapi reflects the live instance
             from swb.asyncapi import clear_introspection_cache
+
             clear_introspection_cache()
 
             if _initial_connect:
