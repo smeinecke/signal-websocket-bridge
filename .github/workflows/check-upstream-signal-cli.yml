@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  packages: read
   actions: write
 
 jobs:
@@ -26,70 +25,24 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Check if version is already published in GHCR
-        id: published
-        env:
-          OWNER: ${{ github.repository_owner }}
-          PACKAGE: ${{ github.event.repository.name }}
-          TARGET_TAG: signal-cli-${{ steps.upstream.outputs.version }}
+      - name: Check if already synced
+        id: synced
         run: |
-          set -euo pipefail
-
-          fetch_versions_page() {
-            local page="$1"
-            gh api \
-              "/orgs/${OWNER}/packages/container/${PACKAGE}/versions?per_page=100&page=${page}" 2>/dev/null \
-              || gh api \
-                "/users/${OWNER}/packages/container/${PACKAGE}/versions?per_page=100&page=${page}"
-          }
-
-          exists=false
-          page=1
-
-          while true; do
-            versions_json="$(fetch_versions_page "$page")"
-            count="$(jq 'length' <<<"$versions_json")"
-            if [ "$count" -eq 0 ]; then
-              break
-            fi
-
-            if jq -e --arg tag "$TARGET_TAG" 'any(.[]; ((.metadata.container.tags // []) | index($tag)))' <<<"$versions_json" >/dev/null; then
-              exists=true
-              break
-            fi
-
-            page=$((page + 1))
-          done
-
-          echo "exists=$exists" >> "$GITHUB_OUTPUT"
-
-      - name: Check for running Docker release workflow
-        id: running_release
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          set -euo pipefail
-          runs_json="$(gh api "repos/${{ github.repository }}/actions/workflows/release-docker.yml/runs?per_page=100")"
-          already_running="$(
-            jq -r --arg branch "$DEFAULT_BRANCH" '
-              any(.workflow_runs[]?;
-                .head_branch == $branch
-                and (.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending")
-              )
-            ' <<<"$runs_json"
-          )"
-          echo "already_running=$already_running" >> "$GITHUB_OUTPUT"
+          tag="signal-cli-v${{ steps.upstream.outputs.version }}"
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Trigger Docker release workflow
-        if: steps.published.outputs.exists != 'true' && steps.running_release.outputs.already_running != 'true'
+        if: steps.synced.outputs.exists == 'false'
         run: |
-          gh api \
-            --method POST \
-            "repos/${{ github.repository }}/actions/workflows/release-docker.yml/dispatches" \
-            -f ref="${{ github.event.repository.default_branch }}"
+          gh workflow run release-docker.yml \
+            --ref "${{ github.event.repository.default_branch }}" \
+            --field create_sync_release=true
 
       - name: Summary
         run: |
           echo "Upstream signal-cli: ${{ steps.upstream.outputs.version }}"
-          echo "Already published: ${{ steps.published.outputs.exists }}"
-          echo "Release workflow already running: ${{ steps.running_release.outputs.already_running }}"
+          echo "Already synced: ${{ steps.synced.outputs.exists }}"

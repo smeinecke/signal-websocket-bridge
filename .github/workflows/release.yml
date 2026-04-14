@@ -30,7 +30,7 @@ jobs:
         with:
           body: ${{ steps.github_changelog.outputs.changelog }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ github.token }}
 
   build-package:
     name: Build binaries
@@ -65,4 +65,4 @@ jobs:
         with:
           files: ./dist/*.whl
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ github.token }}

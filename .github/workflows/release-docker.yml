@@ -6,8 +6,14 @@ on:
       - "v*.*.*"
   pull_request:
     branches:
-      - master
+      - main
   workflow_dispatch: # Allow manual triggering
+    inputs:
+      create_sync_release:
+        description: "Create a GitHub release for automated upstream signal-cli sync"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -170,3 +176,29 @@ jobs:
       - name: Inspect image
         run: |
           docker buildx imagetools inspect ghcr.io/${{ env.REPOSITORY }}:latest
+
+  create-sync-release:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_sync_release == true }}
+    needs:
+      - resolve-signal-cli
+      - merge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SIGNAL_CLI_VERSION: ${{ needs.resolve-signal-cli.outputs.signal_cli_version }}
+    steps:
+      - name: Create GitHub release for synced signal-cli version
+        run: |
+          set -euo pipefail
+          tag="signal-cli-v${SIGNAL_CLI_VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists, skipping"
+            exit 0
+          fi
+
+          gh release create "$tag" \
+            --target "${{ github.sha }}" \
+            --title "signal-cli ${SIGNAL_CLI_VERSION} sync" \
+            --notes "Automated release after syncing to upstream AsamK/signal-cli v${SIGNAL_CLI_VERSION}."

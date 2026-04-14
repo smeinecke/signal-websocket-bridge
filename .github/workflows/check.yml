@@ -22,21 +22,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Cache Primes
-        id: cache-primes
-        uses: actions/cache@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          path: |
-            ~/.cache/uv
-            ~/.cache/pip
-          key: uv-cache-${{ hashFiles('**/pyproject.toml') }}
-          restore-keys: |
-            uv-cache-
+          enable-cache: true
+          cache-dependency-glob: "**/pyproject.toml"
 
-      - name: Set up Python environment
-        run: |
-          wget -qO- https://astral.sh/uv/install.sh | sh
-          uv sync
+      - name: Install dependencies
+        run: uv sync
 
       - name: Run Ruff (PEP 8 Formatting)
         run: |
