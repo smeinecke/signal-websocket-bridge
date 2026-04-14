@@ -4,14 +4,11 @@ A WebSocket bridge for signal-cli that exposes incoming Signal messages as push 
 
 ## Architecture
 
-```
-Signal Network
-     │
-signal-cli (DBus daemon)
-     │  DBus signals (push, no polling)
-swb (signal-websocket-bridge)
-     │  WebSocket (JSON)
-Your application / bot
+```mermaid
+flowchart TD
+    Signal[Signal Network] <---> signal-cli[signal-cli<br/>DBus daemon]
+    signal-cli -->|DBus signals<br/>push, no polling| swb[swb<br/>signal-websocket-bridge]
+    swb <--->|WebSocket<br/>JSON-RPC| App[Your application / bot]
 ```
 
 Incoming messages are pushed to all connected WebSocket clients the moment signal-cli fires a DBus signal — no polling involved.
