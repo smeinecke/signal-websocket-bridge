@@ -196,12 +196,13 @@ jobs:
         run: |
           set -euo pipefail
           tag="signal-cli-v${SIGNAL_CLI_VERSION}"
-          if gh release view "$tag" >/dev/null 2>&1; then
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "Release $tag already exists, skipping"
             exit 0
           fi
 
           gh release create "$tag" \
+            --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
             --title "signal-cli ${SIGNAL_CLI_VERSION} sync" \
             --notes "Automated release after syncing to upstream AsamK/signal-cli v${SIGNAL_CLI_VERSION}."
