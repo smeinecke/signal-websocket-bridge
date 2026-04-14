@@ -203,22 +203,12 @@ class TestSignalCliIntegration:
         # Introspection actually populated the spec — non-empty means DBus worked
         schemas = data.get("components", {}).get("schemas", {})
         messages = data.get("components", {}).get("messages", {})
-        assert schemas, (
-            "AsyncAPI spec has no schemas — DBus introspection likely failed. "
-            f"Spec components: {list(data.get('components', {}).keys())}"
-        )
-        assert messages, (
-            "AsyncAPI spec has no messages — DBus introspection likely failed."
-        )
+        assert schemas, f"AsyncAPI spec has no schemas — DBus introspection likely failed. Spec components: {list(data.get('components', {}).keys())}"
+        assert messages, "AsyncAPI spec has no messages — DBus introspection likely failed."
 
         # signal-cli always exposes a 'version' method — reliable canary
-        assert "version_request" in schemas, (
-            f"Expected 'version_request' schema from signal-cli DBus introspection. "
-            f"Got schemas: {list(schemas.keys())}"
-        )
-        assert "version" in messages, (
-            f"Expected 'version' message. Got messages: {list(messages.keys())}"
-        )
+        assert "version_request" in schemas, f"Expected 'version_request' schema from signal-cli DBus introspection. Got schemas: {list(schemas.keys())}"
+        assert "version" in messages, f"Expected 'version' message. Got messages: {list(messages.keys())}"
 
     @pytest.mark.asyncio
     async def test_websocket_connection(self, docker_container):
