@@ -64,10 +64,7 @@ def _autodiscover_object_path(bus: dbus.Bus) -> str:
         logging.warning("No accounts registered in signal-cli, using root path")
         return "/org/asamk/Signal"
     if len(accounts) > 1:
-        logging.warning(
-            f"Multiple accounts found: {list(accounts)}. "
-            "Set SIGNAL_ACCOUNT to select one explicitly."
-        )
+        logging.warning(f"Multiple accounts found: {list(accounts)}. Set SIGNAL_ACCOUNT to select one explicitly.")
     path = str(accounts[0])
     logging.info(f"Auto-discovered account path: {path}")
     return path
