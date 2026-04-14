@@ -31,6 +31,9 @@ xenon:
 bandit:
 	bandit -c pyproject.toml -r .
 
+vulture:
+	vulture src/ .vulture-whitelist.py
+
 pyright:
 	pyright
 
