@@ -39,6 +39,7 @@ jobs:
         if: steps.synced.outputs.exists == 'false'
         run: |
           gh workflow run release-docker.yml \
+            --repo "${{ github.repository }}" \
             --ref "${{ github.event.repository.default_branch }}" \
             --field create_sync_release=true
 
