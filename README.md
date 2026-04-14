@@ -7,7 +7,7 @@ A WebSocket bridge for signal-cli that exposes incoming Signal messages as push 
 ```mermaid
 flowchart TD
     Signal[Signal Network] <---> signal-cli[signal-cli<br/>DBus daemon]
-    signal-cli -->|DBus signals<br/>push, no polling| swb[swb<br/>signal-websocket-bridge]
+    signal-cli <--->|DBus<br/>signals & method calls| swb[swb<br/>signal-websocket-bridge]
     swb <--->|WebSocket<br/>JSON-RPC| App[Your application / bot]
 ```
 
