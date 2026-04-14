@@ -187,16 +187,38 @@ class TestSignalCliIntegration:
                 time.sleep(1)
 
     def test_asyncapi_endpoint(self, docker_container):
-        """Test the AsyncAPI spec endpoint returns valid JSON."""
+        """Test the AsyncAPI spec endpoint returns a populated spec from DBus introspection."""
         import urllib.request
 
         url = f"http://localhost:{WEBSOCKET_PORT}/asyncapi.json"
         with urllib.request.urlopen(url, timeout=10) as response:
             assert response.status == 200
             data = json.loads(response.read().decode())
-            assert data.get("asyncapi") == "2.6.0"
-            assert "info" in data
-            assert "channels" in data
+
+        # Top-level structure
+        assert data.get("asyncapi") == "2.6.0"
+        assert "info" in data
+        assert "channels" in data
+
+        # Introspection actually populated the spec — non-empty means DBus worked
+        schemas = data.get("components", {}).get("schemas", {})
+        messages = data.get("components", {}).get("messages", {})
+        assert schemas, (
+            "AsyncAPI spec has no schemas — DBus introspection likely failed. "
+            f"Spec components: {list(data.get('components', {}).keys())}"
+        )
+        assert messages, (
+            "AsyncAPI spec has no messages — DBus introspection likely failed."
+        )
+
+        # signal-cli always exposes a 'version' method — reliable canary
+        assert "version_request" in schemas, (
+            f"Expected 'version_request' schema from signal-cli DBus introspection. "
+            f"Got schemas: {list(schemas.keys())}"
+        )
+        assert "version" in messages, (
+            f"Expected 'version' message. Got messages: {list(messages.keys())}"
+        )
 
     @pytest.mark.asyncio
     async def test_websocket_connection(self, docker_container):

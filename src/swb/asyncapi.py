@@ -96,27 +96,35 @@ def _parse_signal_args(signal) -> list[dict]:
 
 
 def _extract_interface_data(root) -> dict[str, Any]:
-    """Parse XML root and extract methods and signals from org.asamk.Signal interface."""
+    """Parse XML root and extract methods and signals from org.asamk.Signal interface.
+
+    Falls back to org.asamk.SignalControl when no registered account is present
+    (i.e. signal-cli is running but no account is linked yet).
+    """
     registry: dict[str, Any] = {"methods": {}, "signals": {}}
 
-    for interface in root.findall(".//interface"):
-        if interface.get("name") != "org.asamk.Signal":
+    # Prefer the per-account interface; fall back to the control interface
+    # so introspection still yields useful output on unregistered instances.
+    preferred = "org.asamk.Signal"
+    fallback = "org.asamk.SignalControl"
+
+    interfaces = {iface.get("name"): iface for iface in root.findall(".//interface")}
+    target = interfaces.get(preferred) or interfaces.get(fallback)
+    if target is None:
+        return registry
+
+    for method in target.findall("method"):
+        name = method.get("name", "")
+        if not name:
             continue
+        in_args, out_type, out_schema = _parse_method_args(method)
+        _register_method(registry, name, in_args, out_type, out_schema)
 
-        # --- Methods ---
-        for method in interface.findall("method"):
-            name = method.get("name", "")
-            if not name:
-                continue
-            in_args, out_type, out_schema = _parse_method_args(method)
-            _register_method(registry, name, in_args, out_type, out_schema)
-
-        # --- Signals ---
-        for signal in interface.findall("signal"):
-            name = signal.get("name", "")
-            if not name:
-                continue
-            registry["signals"][name] = {"args": _parse_signal_args(signal)}
+    for signal in target.findall("signal"):
+        name = signal.get("name", "")
+        if not name:
+            continue
+        registry["signals"][name] = {"args": _parse_signal_args(signal)}
 
     return registry
 
