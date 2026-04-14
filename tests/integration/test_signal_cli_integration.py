@@ -5,6 +5,8 @@ This test verifies that:
 2. DBus communication with signal-cli works (version check)
 3. The WebSocket bridge health endpoint responds
 4. Basic WebSocket connection can be established
+5. WebSocket authentication works (success and failure cases)
+6. Version can be retrieved via authenticated WebSocket
 """
 
 import asyncio
@@ -22,6 +24,7 @@ CONTAINER_NAME = "swb-integration-test"
 WEBSOCKET_PORT = 9876
 HEALTH_URL = f"http://localhost:{WEBSOCKET_PORT}/health"
 WS_URL = f"ws://localhost:{WEBSOCKET_PORT}/ws"
+TEST_TOKEN = "test-secret-token-12345"
 
 
 @pytest.fixture(scope="module")
@@ -66,6 +69,8 @@ def docker_container():
             "SIGNAL_DBUS_BUS=session",
             "-e",
             "SIGNAL_LOG_LEVEL=DEBUG",
+            "-e",
+            f"SIGNAL_WS_TOKEN={TEST_TOKEN}",
             "swb:integration",
         ],
         cwd=project_root,
@@ -212,15 +217,23 @@ class TestSignalCliIntegration:
 
     @pytest.mark.asyncio
     async def test_websocket_connection(self, docker_container):
-        """Test WebSocket connection can be established."""
+        """Test WebSocket connection can be established and authenticated."""
         max_retries = 10
         last_error = None
 
         for i in range(max_retries):
             try:
                 async with connect(WS_URL, open_timeout=5) as ws:
-                    # Connection established successfully
-                    assert isinstance(ws, WebSocketClientProtocol)
+                    # Authenticate first
+                    auth_request = {"auth": TEST_TOKEN}
+                    await ws.send(json.dumps(auth_request))
+
+                    # Wait for auth response
+                    auth_response_raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                    auth_response = json.loads(auth_response_raw)
+
+                    # Verify auth success
+                    assert auth_response.get("auth") == "ok", f"Auth failed: {auth_response}"
                     return
             except Exception as e:
                 last_error = e
@@ -231,22 +244,33 @@ class TestSignalCliIntegration:
         pytest.fail(f"WebSocket connection failed after {max_retries} retries: {last_error}")
 
     @pytest.mark.asyncio
-    async def test_websocket_version_call(self, docker_container):
-        """Test calling version method via WebSocket JSON-RPC."""
+    async def test_websocket_auth_and_version(self, docker_container):
+        """Test WebSocket authentication and version call."""
         max_retries = 10
 
         for i in range(max_retries):
             try:
                 async with connect(WS_URL, open_timeout=5) as ws:
-                    # Send version request
-                    request = {
+                    # Step 1: Send authentication
+                    auth_request = {"auth": TEST_TOKEN}
+                    await ws.send(json.dumps(auth_request))
+
+                    # Step 2: Wait for auth response
+                    auth_response_raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                    auth_response = json.loads(auth_response_raw)
+
+                    # Verify auth success
+                    assert auth_response.get("auth") == "ok", f"Auth failed: {auth_response}"
+
+                    # Step 3: Send version request
+                    version_request = {
                         "id": 1,
                         "method": "version",
                         "params": {},
                     }
-                    await ws.send(json.dumps(request))
+                    await ws.send(json.dumps(version_request))
 
-                    # Wait for response with timeout
+                    # Step 4: Wait for version response
                     response_raw = await asyncio.wait_for(ws.recv(), timeout=5)
                     response = json.loads(response_raw)
 
@@ -268,8 +292,24 @@ class TestSignalCliIntegration:
                         capture_output=True,
                         text=True,
                     )
-                    pytest.fail(f"WebSocket version call failed: {e}\nContainer logs:\n{logs.stdout}\n{logs.stderr}")
+                    pytest.fail(f"WebSocket auth/version call failed: {e}\nContainer logs:\n{logs.stdout}\n{logs.stderr}")
                 await asyncio.sleep(1)
+
+    @pytest.mark.asyncio
+    async def test_websocket_auth_failure(self, docker_container):
+        """Test WebSocket connection with invalid token is rejected."""
+        async with connect(WS_URL, open_timeout=5) as ws:
+            # Send invalid auth
+            auth_request = {"auth": "invalid-token"}
+            await ws.send(json.dumps(auth_request))
+
+            # Wait for error response
+            response_raw = await asyncio.wait_for(ws.recv(), timeout=5)
+            response = json.loads(response_raw)
+
+            # Verify auth failure
+            assert "error" in response
+            assert response.get("error") == "unauthorized"
 
     def test_bridge_process_running(self, docker_container):
         """Verify the WebSocket bridge process is running."""

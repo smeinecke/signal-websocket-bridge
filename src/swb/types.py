@@ -48,6 +48,11 @@ def to_int64_array(lst: list) -> dbus.Array:
     return dbus.Array([dbus.Int64(int(v)) for v in lst], signature=dbus.Signature("x"))
 
 
+def to_string_array(lst: list) -> dbus.Array:
+    """Convert list of strings to dbus Array of strings (as signature)."""
+    return dbus.Array(lst, signature=dbus.Signature("s"))
+
+
 def validate_attachments(attachments: list[str]) -> None:
     """Validate attachment paths exist and are readable."""
     for path in attachments:

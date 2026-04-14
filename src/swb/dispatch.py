@@ -10,6 +10,7 @@ from swb.types import (
     to_bytes,
     to_int64,
     to_int64_array,
+    to_string_array,
     validate_attachments,
 )
 
@@ -184,7 +185,7 @@ class MethodDispatcher:
         validate_attachments(attachments)
         ts = self.signal_interface.sendMessage(
             params["message"],
-            attachments,
+            to_string_array(attachments),
             params["recipients"],
         )
         return {"timestamp": int(ts)}
@@ -192,7 +193,7 @@ class MethodDispatcher:
     def _send_note_to_self(self, params: dict) -> dict:
         attachments = params.get("attachments", [])
         validate_attachments(attachments)
-        ts = self.signal_interface.sendNoteToSelfMessage(params["message"], attachments)
+        ts = self.signal_interface.sendNoteToSelfMessage(params["message"], to_string_array(attachments))
         return {"timestamp": int(ts)}
 
     def _send_message_reaction(self, params: dict) -> dict:
@@ -251,7 +252,7 @@ class MethodDispatcher:
         validate_attachments(attachments)
         ts = self.signal_interface.sendGroupMessage(
             params["message"],
-            attachments,
+            to_string_array(attachments),
             to_bytes(params["groupId"]),
         )
         return {"timestamp": int(ts)}
