@@ -1,0 +1,61 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+tests/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# GitHub
+.github/
+
+# Docker
+Dockerfile
+docker/*
+!docker/supervisord.conf
+.dockerignore
+
+# Documentation
+README.md
+
+# Local config
+.env
+.env.example
+
+# Misc
+.codex
+.pre-commit-config.yaml
+python-version

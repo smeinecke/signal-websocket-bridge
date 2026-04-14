@@ -1,0 +1,29 @@
+[Unit]
+Description=signal-cli daemon for Signal messaging
+Documentation=https://github.com/AsamK/signal-cli
+After=dbus.service network.target
+Wants=dbus.service
+
+[Service]
+Type=simple
+User=signal-cli
+Group=signal-cli
+ExecStart=/usr/local/bin/signal-cli daemon --system
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=signal-cli
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/signal-cli
+WorkingDirectory=/var/lib/signal-cli
+
+[Install]
+WantedBy=multi-user.target
