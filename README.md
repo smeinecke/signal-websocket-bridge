@@ -1,6 +1,6 @@
 # signal-websocket-bridge
 
-A WebSocket bridge for signal-cli that exposes incoming Signal messages as push events (via DBus) and allows sending messages via a simple JSON-RPC interface.
+A WebSocket bridge for [signal-cli](https://github.com/AsamK/signal-cli) that exposes incoming Signal messages as push events (via DBus) and allows sending messages via a simple JSON-RPC interface.
 
 ## Architecture
 
