@@ -62,7 +62,7 @@ asyncio_mode = "auto"
 
 [dependency-groups]
 dev = [
-    "bandit[toml]>=1.8.3",
+    "bandit[toml]>=1.9.4",
     "pyright>=1.1.400",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.26.0",
