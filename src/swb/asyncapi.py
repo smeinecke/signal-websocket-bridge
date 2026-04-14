@@ -121,6 +121,11 @@ def _extract_interface_data(root) -> dict[str, Any]:
     return registry
 
 
+def clear_introspection_cache() -> None:
+    """Clear the introspection cache. Called after reconnect so the spec reflects the live instance."""
+    _introspection_cache.clear()
+
+
 def introspect_signal_interface(signal_object) -> dict[str, Any]:
     """Introspect org.asamk.Signal interface and return method registry."""
     if "signal_interface" in _introspection_cache:
@@ -198,7 +203,7 @@ def generate_asyncapi_spec(config: Config, signal_object) -> dict[str, Any]:
         else:
             # Unknown signal: generic {signal, args[]} fallback
             args_schemas = []
-            for i, arg in enumerate(signal_info.get("args", [])):
+            for arg in signal_info.get("args", []):
                 args_schemas.append(arg.get("schema", {}))
 
             schemas[f"{signal_name}_signal"] = {

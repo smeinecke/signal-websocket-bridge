@@ -19,6 +19,7 @@ _reconnect_lock = threading.Lock()
 _reconnect_backoff = 1  # seconds, doubles up to 60s cap
 _dbus_connected = False
 _reconnect_thread: threading.Thread | None = None
+_initial_connect = True  # distinguishes first connect from reconnect
 
 # Stored at connect time so the reconnect thread can use them
 _config: Config | None = None
@@ -61,7 +62,7 @@ def connect_signal_interface(
 ) -> bool:
     """Connect to signal-cli DBus interface. Returns True on success."""
     global _bus, _signal_object, _signal_interface, _dbus_connected, _reconnect_backoff
-    global _loop, _signal_handler, _connected_clients, _clients_lock, _config
+    global _loop, _signal_handler, _connected_clients, _clients_lock, _config, _initial_connect
 
     _config = config
     _loop = loop
@@ -92,7 +93,15 @@ def connect_signal_interface(
                     member_keyword="member",
                 )
 
-            _broadcast_to_clients({"signal": "Reconnected"})
+            # Clear stale introspection cache so /asyncapi reflects the live instance
+            from swb.asyncapi import clear_introspection_cache
+            clear_introspection_cache()
+
+            if _initial_connect:
+                _initial_connect = False
+            else:
+                _broadcast_to_clients({"signal": "Reconnected"})
+
             return True
 
         except Exception as exc:
@@ -151,8 +160,7 @@ def handle_dbus_error(exc: Exception) -> None:
     if not isinstance(exc, dbus.exceptions.DBusException):
         raise exc
 
-    dbus_exc = exc if isinstance(exc, dbus.exceptions.DBusException) else None
-    error_name = dbus_exc.get_dbus_name() if dbus_exc else str(exc)  # type: ignore
+    error_name = exc.get_dbus_name()  # type: ignore[union-attr]
     is_connection_error = any(e in error_name for e in ("ServiceUnknown", "NoReply", "Disconnected", "UnknownObject"))
 
     if not is_connection_error:
@@ -183,7 +191,7 @@ def get_interface() -> dbus.Interface:
     return _signal_interface
 
 
-def get_object_instance() -> dbus.ProxyObject:
+def get_object_instance():  # -> dbus.ProxyObject
     """Get the signal-cli DBus proxy object (needed for introspection)."""
     if _signal_object is None:
         raise RuntimeError("DBus object not connected")

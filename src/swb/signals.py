@@ -1,5 +1,6 @@
 """DBus signal handling and serialization."""
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -56,13 +57,10 @@ def create_signal_handler(connected_clients: set, clients_lock: Any, loop: Any):
         payload = json.dumps(payload_dict)
         logging.debug(f"DBus signal [{signal_name}]: {payload}")
 
-        import asyncio
-
         with clients_lock:
             clients_snapshot = list(connected_clients)
 
         for ws in clients_snapshot:
-            # aiohttp WebSocketResponse uses send_str, websockets library uses send
             if hasattr(ws, "send_str"):
                 asyncio.run_coroutine_threadsafe(ws.send_str(payload), loop)
             else:

@@ -303,7 +303,7 @@ class TestWebsocketMessageTypes:
             mock_ws.receive.side_effect = [
                 MagicMock(type=aiohttp.WSMsgType.ERROR),
             ]
-            mock_ws.exception.return_value = Exception("Test error")
+            mock_ws.exception = MagicMock(return_value=Exception("Test error"))
             mock_ws.closed = True
 
             await server.websocket_handler(mock_request)
