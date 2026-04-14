@@ -1,8 +1,9 @@
 """Entry point for signalbot."""
 
 import asyncio
-import sys
+import logging
 import threading
+import time
 
 import dbus.exceptions
 from gi.repository import GLib
@@ -15,11 +16,26 @@ from swb.dbus_client import (
     get_interface,
     get_object_instance,
     handle_dbus_error,
+    is_connected,
     setup_glib_loop,
 )
 from swb.dispatch import MethodDispatcher
 from swb.signals import create_signal_handler
 from swb.websocket_server import WebSocketServer
+
+_WATCHDOG_INTERVAL = 30  # seconds between liveness probes
+
+
+def _run_watchdog(get_iface, stop_event: threading.Event) -> None:
+    """Periodically probe signal-cli via DBus; trigger reconnect on failure."""
+    while not stop_event.wait(_WATCHDOG_INTERVAL):
+        if not is_connected():
+            continue
+        try:
+            get_iface().version()  # type: ignore[attr-defined]
+        except dbus.exceptions.DBusException as exc:
+            logging.warning(f"Watchdog detected DBus failure: {exc}")
+            handle_dbus_error(exc)
 
 
 def main():
@@ -41,12 +57,11 @@ def main():
 
     signal_handler = create_signal_handler(connected_clients, clients_lock, loop)
 
-    if not connect_signal_interface(config, loop, signal_handler, connected_clients, clients_lock):
-        print(f"Fatal: Could not connect to signal-cli DBus service")
-        print(f"Check that signal-cli daemon is running on the {config.bus} bus")
-        if config.account:
-            print(f"And that account {config.account} is registered")
-        sys.exit(1)
+    backoff = 1
+    while not connect_signal_interface(config, loop, signal_handler, connected_clients, clients_lock):
+        logging.info(f"Waiting for signal-cli on {config.bus} bus, retrying in {backoff}s...")
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 30)
 
     dispatcher = MethodDispatcher(get_interface, get_bus_instance)
 
@@ -60,6 +75,10 @@ def main():
 
     def get_asyncapi_spec() -> dict:
         return generate_asyncapi_spec(config, get_object_instance())
+
+    stop_watchdog = threading.Event()
+    watchdog_thread = threading.Thread(target=_run_watchdog, args=(get_interface, stop_watchdog), daemon=True)
+    watchdog_thread.start()
 
     server = WebSocketServer(
         config=config,
@@ -75,6 +94,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        stop_watchdog.set()
         glib_loop.quit()
 
 
