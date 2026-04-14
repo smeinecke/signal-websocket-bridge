@@ -64,19 +64,19 @@ docker compose up -d
 **Option A: Register a new phone number**
 ```bash
 # Replace +4915... with your actual phone number
-docker compose exec signal-bridge signal-cli -a +4915... register
+docker compose exec signal-bridge signal-cli -a +4915... --config /var/lib/signal-cli register
 
 # Verify with the code received via SMS/voice call
-docker compose exec signal-bridge signal-cli -a +4915... verify 123456
+docker compose exec signal-bridge signal-cli -a +4915... --config /var/lib/signal-cli verify 123456
 ```
 
 **Option B: Link to an existing Signal device** (recommended for most users)
 ```bash
 # Generate a linking URI (shows as QR code data)
-docker compose exec signal-bridge signal-cli link
+docker compose exec signal-bridge signal-cli --config /var/lib/signal-cli link
 
 # Or output as URL for manual linking
-docker compose exec signal-bridge signal-cli link --uri
+docker compose exec signal-bridge signal-cli --config /var/lib/signal-cli link --uri
 ```
 
 Then scan the QR code with your Signal mobile app: **Settings → Linked Devices → Link New Device**.
