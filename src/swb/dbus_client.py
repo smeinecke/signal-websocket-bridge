@@ -1,5 +1,7 @@
 """DBus client with auto-reconnection support."""
 
+from __future__ import annotations
+
 import json
 import logging
 import threading

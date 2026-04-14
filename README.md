@@ -18,7 +18,7 @@ Incoming messages are pushed to all connected WebSocket clients the moment signa
 A ready-to-use Docker image is available on GitHub Container Registry. The image includes:
 
 - **Python 3.13** with the WebSocket bridge
-- **signal-cli 0.14.2** with OpenJDK
+- **signal-cli (native image)**
 - **DBus** for communication between components
 
 ### Supported platforms
@@ -48,12 +48,12 @@ services:
     environment:
       - SIGNAL_WS_HOST=0.0.0.0
       - SIGNAL_WS_PORT=8765
+      - SIGNAL_DBUS_BUS=session
       - SIGNAL_WS_TOKEN=your-secret-token   # required when exposed beyond localhost
       - SIGNAL_ACCOUNT=+4915...             # required for multi-account signal-cli
       - SIGNAL_LOG_LEVEL=INFO
     volumes:
       - signal-cli-data:/var/lib/signal-cli
-      - /run/dbus:/run/dbus:ro
     ports:
       - "8765:8765"
 
@@ -136,7 +136,7 @@ All flags can also be set via environment variables:
 
 | Variable | Flag | Default | Description |
 |----------|------|---------|-------------|
-| `SIGNAL_DBUS_BUS` | `--system` / `--session` | `system` | DBus bus to connect to |
+| `SIGNAL_DBUS_BUS` | `--system` / `--session` | `system` | DBus bus to connect to (`session` in Docker image/compose defaults) |
 | `SIGNAL_WS_HOST` | `--host` | `localhost` | WebSocket listen address |
 | `SIGNAL_WS_PORT` | `--port` | `8765` | WebSocket listen port |
 | `SIGNAL_WS_TOKEN` | `--token` | _(none)_ | Auth token — required if exposed beyond localhost |

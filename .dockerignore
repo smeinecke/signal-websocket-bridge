@@ -46,6 +46,7 @@ tests/
 Dockerfile
 docker/*
 !docker/supervisord.conf
+!docker/signal-cli-dbus.conf
 .dockerignore
 
 # Documentation
