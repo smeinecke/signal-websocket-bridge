@@ -82,11 +82,20 @@ class Method(Enum):
 
 
 class MethodDispatcher:
-    """Dispatches JSON-RPC method calls to signal-cli DBus interface."""
+    """Dispatches JSON-RPC method calls to signal-cli DBus interface.
 
-    def __init__(self, signal_interface, bus):
-        self.signal_interface = signal_interface
-        self.bus = bus
+    Uses callable getters for the interface and bus so that reconnections
+    are transparent — stale references are never held across a disconnect.
+    """
+
+    def __init__(self, get_interface, get_bus):
+        """
+        Args:
+            get_interface: zero-argument callable returning the current dbus.Interface
+            get_bus:       zero-argument callable returning the current dbus.Bus
+        """
+        self._get_interface = get_interface
+        self._get_bus = get_bus
         self._handlers: dict[Method, Callable] = {
             # Messaging
             Method.SEND_MESSAGE: self._send_message,
@@ -144,6 +153,14 @@ class MethodDispatcher:
             Method.TRUST_IDENTITY: self._trust_identity,
             Method.TRUST_IDENTITY_VERIFIED: self._trust_identity_verified,
         }
+
+    @property
+    def signal_interface(self):
+        return self._get_interface()
+
+    @property
+    def bus(self):
+        return self._get_bus()
 
     def dispatch(self, method_name: str, params: dict):
         """Dispatch JSON-RPC method call to appropriate handler."""

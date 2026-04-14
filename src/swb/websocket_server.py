@@ -10,13 +10,14 @@ import aiohttp
 from aiohttp import web
 
 from swb.config import Config
+from swb.dbus_client import is_connected
 
 # Handle missing dbus module (system package)
 try:
     from dbus.exceptions import DBusException
 except ImportError:
 
-    class DBusException(Exception):
+    class DBusException(Exception):  # type: ignore[no-redef]
         pass
 
 
@@ -41,6 +42,12 @@ class WebSocketServer:
         # and the WebSocket server share the same client tracking objects.
         self.connected_clients: set[web.WebSocketResponse] = connected_clients if connected_clients is not None else set()
         self.clients_lock: threading.Lock = clients_lock if clients_lock is not None else threading.Lock()
+
+    async def health_handler(self, request: web.Request) -> web.Response:
+        """Liveness/readiness probe. Returns 200 when connected to DBus, 503 when reconnecting."""
+        if is_connected():
+            return web.json_response({"status": "ok"})
+        return web.json_response({"status": "reconnecting"}, status=503)
 
     async def asyncapi_json_handler(self, request: web.Request) -> web.Response:
         """Serve AsyncAPI spec as JSON."""
@@ -137,6 +144,7 @@ class WebSocketServer:
     def init_app(self) -> web.Application:
         """Initialize aiohttp application with routes."""
         app = web.Application()
+        app.router.add_get("/health", self.health_handler)
         app.router.add_get("/asyncapi.json", self.asyncapi_json_handler)
         app.router.add_get("/asyncapi.yaml", self.asyncapi_yaml_handler)
         app.router.add_get("/ws", self.websocket_handler)

@@ -48,7 +48,7 @@ def main():
             print(f"And that account {config.account} is registered")
         sys.exit(1)
 
-    dispatcher = MethodDispatcher(get_interface(), get_bus_instance())
+    dispatcher = MethodDispatcher(get_interface, get_bus_instance)
 
     def dispatch_with_reconnect(method: str, params: dict):
         try:

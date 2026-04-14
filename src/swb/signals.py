@@ -8,6 +8,14 @@ from typing import Any
 from swb.types import dbus_to_native
 
 
+def _log_send_error(future) -> None:
+    """Done-callback for run_coroutine_threadsafe — logs failed sends at DEBUG level."""
+    try:
+        future.result()
+    except Exception as exc:
+        logging.debug(f"Failed to send signal to client: {exc}")
+
+
 def serialize_signal(signal_name: str, args: tuple) -> dict:
     """Convert positional DBus signal args to named fields.
 
@@ -61,9 +69,8 @@ def create_signal_handler(connected_clients: set, clients_lock: Any, loop: Any):
             clients_snapshot = list(connected_clients)
 
         for ws in clients_snapshot:
-            if hasattr(ws, "send_str"):
-                asyncio.run_coroutine_threadsafe(ws.send_str(payload), loop)
-            else:
-                asyncio.run_coroutine_threadsafe(ws.send(payload), loop)
+            coro = ws.send_str(payload) if hasattr(ws, "send_str") else ws.send(payload)
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            future.add_done_callback(_log_send_error)
 
     return handler

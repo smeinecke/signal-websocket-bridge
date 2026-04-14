@@ -36,7 +36,7 @@ def mock_bus():
 @pytest.fixture
 def dispatcher(mock_interface, mock_bus):
     """Create a MethodDispatcher with mocked dependencies."""
-    return MethodDispatcher(mock_interface, mock_bus)
+    return MethodDispatcher(lambda: mock_interface, lambda: mock_bus)
 
 
 class TestMessagingHandlers:

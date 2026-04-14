@@ -57,15 +57,21 @@ RUN groupadd -r signal && useradd -r -g signal signal \
     && mkdir -p /var/lib/signal-cli /var/lib/swb \
     && chown -R signal:signal /var/lib/signal-cli /var/lib/swb
 
-# Expose WebSocket port
+# Expose WebSocket / HTTP port
 EXPOSE 8765
 
-# Environment variables
+# Environment variables (override at runtime via -e or docker-compose environment:)
 ENV SIGNAL_WS_HOST=0.0.0.0 \
     SIGNAL_WS_PORT=8765 \
     SIGNAL_DBUS_BUS=system \
     SIGNAL_LOG_LEVEL=INFO \
+    SIGNAL_WS_TOKEN="" \
+    SIGNAL_ACCOUNT="" \
     PATH="/app/.venv/bin:${PATH}"
+
+# Liveness / readiness probe via the /health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:${SIGNAL_WS_PORT}/health || exit 1
 
 # Start supervisor to manage both processes
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

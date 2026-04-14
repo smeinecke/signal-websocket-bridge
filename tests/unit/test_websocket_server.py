@@ -240,6 +240,7 @@ class TestInitApp:
             elif hasattr(resource, "_path"):
                 routes.append(resource._path)
 
+        assert "/health" in routes
         assert "/asyncapi.json" in routes
         assert "/asyncapi.yaml" in routes
         assert "/ws" in routes

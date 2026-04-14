@@ -48,14 +48,14 @@ services:
     environment:
       - SIGNAL_WS_HOST=0.0.0.0
       - SIGNAL_WS_PORT=8765
-      - SIGNAL_WS_TOKEN=your-secret-token
-      - SIGNAL_ACCOUNT=+4915...
+      - SIGNAL_WS_TOKEN=your-secret-token   # required when exposed beyond localhost
+      - SIGNAL_ACCOUNT=+4915...             # required for multi-account signal-cli
+      - SIGNAL_LOG_LEVEL=INFO
     volumes:
       - signal-cli-data:/var/lib/signal-cli
       - /run/dbus:/run/dbus:ro
     ports:
       - "8765:8765"
-    privileged: true
 
 volumes:
   signal-cli-data:
@@ -96,103 +96,182 @@ sudo pacman -S python-dbus python-gobject
 
 ```bash
 uv sync
-# or: pip install websockets
 ```
 
 ### 3. signal-cli running in DBus daemon mode
 
-signal-cli must be started as a DBus service so that `org.asamk.Signal` is available on the system bus:
+signal-cli must be started as a DBus service so that `org.asamk.Signal` is available on the bus:
 
 ```bash
 # Register your account first (one-time)
-./signal-cli-0.14.2/bin/signal-cli -a +49... register
-./signal-cli-0.14.2/bin/signal-cli -a +49... verify <code>
+signal-cli -a +49... register
+signal-cli -a +49... verify <code>
 
 # Start the DBus daemon
-./signal-cli-0.14.2/bin/signal-cli -a +49... daemon --system
+signal-cli -a +49... daemon --system
 ```
 
-For autostart, install the provided systemd service or DBus activation file from the signal-cli docs.
+For autostart, install the provided `signal-cli.service` systemd unit.
 
 ## Running the bridge
 
 ```bash
 # Default: system bus, localhost:8765
-python -m swb
+swb-bridge
+# or: python -m swb
 
-# Per-user signal-cli install (session bus)
-python -m swb --session
+# Session bus (per-user signal-cli install)
+swb-bridge --session
 
-# Custom host/port
-python -m swb --host 0.0.0.0 --port 9000
+# Custom host/port with auth token
+swb-bridge --host 0.0.0.0 --port 9000 --token mysecret
 
-# Via environment variables
-SIGNAL_DBUS_BUS=session SIGNAL_WS_HOST=0.0.0.0 SIGNAL_WS_PORT=9000 python -m swb
+# Multi-account mode (signal-cli running with multiple accounts)
+swb-bridge --account +4915...
 ```
 
+### Environment variables
+
+All flags can also be set via environment variables:
+
+| Variable | Flag | Default | Description |
+|----------|------|---------|-------------|
+| `SIGNAL_DBUS_BUS` | `--system` / `--session` | `system` | DBus bus to connect to |
+| `SIGNAL_WS_HOST` | `--host` | `localhost` | WebSocket listen address |
+| `SIGNAL_WS_PORT` | `--port` | `8765` | WebSocket listen port |
+| `SIGNAL_WS_TOKEN` | `--token` | _(none)_ | Auth token — required if exposed beyond localhost |
+| `SIGNAL_ACCOUNT` | `--account` | _(none)_ | Phone number for multi-account mode (e.g. `+4915...`) |
+| `SIGNAL_LOG_LEVEL` | `--log-level` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
 > **System vs session bus**: signal-cli started as a systemd service or with `--system`
-> uses the system bus. A user-level install (e.g. `signal-cli daemon` without `--system`)
-> uses the session bus. When in doubt, check with:
+> uses the system bus. A user-level install uses the session bus. When in doubt:
 > ```bash
-> dbus-send --system --print-reply --dest=org.asamk.Signal /org/asamk/Signal org.freedesktop.DBus.Introspectable.Introspect
-> # if that fails, try --session instead of --system
+> dbus-send --system --print-reply --dest=org.asamk.Signal /org/asamk/Signal \
+>   org.freedesktop.DBus.Introspectable.Introspect
+> # if that fails, try --session
 > ```
+
+## HTTP endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/ws` | `GET` (WS upgrade) | WebSocket endpoint for JSON-RPC |
+| `/` | `GET` (WS upgrade) | Alias for `/ws` |
+| `/health` | `GET` | Liveness/readiness probe |
+| `/asyncapi.json` | `GET` | Auto-generated AsyncAPI 2.6 spec (JSON) |
+| `/asyncapi.yaml` | `GET` | Auto-generated AsyncAPI 2.6 spec (YAML) |
+
+### `/health`
+
+Returns `200 OK` when connected to the signal-cli DBus service, `503 Service Unavailable` while reconnecting.
+
+```bash
+curl http://localhost:8765/health
+# {"status": "ok"}
+
+# Use as Docker HEALTHCHECK or Kubernetes readiness probe
+```
+
+### `/asyncapi.json` / `/asyncapi.yaml`
+
+Returns a live AsyncAPI 2.6 specification generated from DBus introspection. Includes all available methods and signal schemas. Refreshes automatically after a reconnect.
 
 ## WebSocket protocol
 
-### Receiving messages (server → client, push)
+### Authentication
 
-Every DBus signal from `org.asamk.Signal` is forwarded as JSON:
+When `--token` / `SIGNAL_WS_TOKEN` is set, the first message from the client must be an auth message. The connection is closed if authentication fails or doesn't arrive within 5 seconds.
+
+```json
+// Client → server (first message)
+{"auth": "your-secret-token"}
+
+// Server → client (on success)
+{"auth": "ok"}
+
+// Server → client (on failure)
+{"error": "unauthorized"}
+```
+
+### Bridge events (server → client, push)
+
+The bridge emits system events when the DBus connection state changes:
+
+```json
+{"signal": "Disconnected"}   // signal-cli went away
+{"signal": "Reconnected"}    // bridge reconnected to signal-cli
+```
+
+### Incoming Signal messages (server → client, push)
+
+Known signals are delivered with **named fields**. Unknown or future signals fall back to a generic `{signal, args[]}` format.
+
+#### `MessageReceived`
+
+Fired when a direct or group message arrives.
 
 ```json
 {
   "signal": "MessageReceived",
-  "args": [1713000000000, "+4915100000000", [], "Hello!", []]
+  "timestamp": 1713000000000,
+  "sender": "+4915100000000",
+  "groupId": null,
+  "message": "Hello!",
+  "attachments": []
 }
 ```
 
-Signal argument layout for `MessageReceived`:
-| Index | Type | Description |
-|-------|------|-------------|
-| 0 | int | Timestamp (ms) |
-| 1 | string | Sender number |
-| 2 | array | Group ID (empty for 1:1) |
-| 3 | string | Message text |
-| 4 | array | Attachment paths |
+`groupId` is a base64 string for group messages, `null` for direct messages.
 
-Other signals you may receive: `ReceiptReceived`, `SyncMessageReceived`, `ContactsUpdated`, etc.
+#### `SyncMessageReceived`
+
+Fired when *you* send a message from a linked device.
+
+```json
+{
+  "signal": "SyncMessageReceived",
+  "timestamp": 1713000000000,
+  "sender": "+4915100000000",
+  "destination": "+4916200000000",
+  "groupId": null,
+  "message": "Hello from my phone",
+  "attachments": []
+}
+```
+
+#### `ReceiptReceived`
+
+Fired when a recipient's device delivers your message.
+
+```json
+{
+  "signal": "ReceiptReceived",
+  "timestamp": 1713000000000,
+  "sender": "+4915100000000"
+}
+```
 
 ### Sending messages (client → server, request/response)
+
+All requests follow JSON-RPC 2.0 style. The `id` field is echoed back in the response.
 
 #### Send a 1:1 message
 
 ```json
-{
-  "id": 1,
-  "method": "sendMessage",
-  "params": {
-    "message": "Hello from the bot!",
-    "recipients": ["+4915100000000"]
-  }
-}
+{"id": 1, "method": "sendMessage", "params": {"message": "Hello!", "recipients": ["+4915100000000"]}}
 ```
 
 Response:
 ```json
-{"id": 1, "result": "ok"}
+{"id": 1, "result": {"timestamp": 1713000000000}}
 ```
 
 #### Send a group message
 
+`groupId` is the base64-encoded group ID from `listGroups`.
+
 ```json
-{
-  "id": 2,
-  "method": "sendGroupMessage",
-  "params": {
-    "message": "Hello group!",
-    "groupId": "base64groupid=="
-  }
-}
+{"id": 2, "method": "sendGroupMessage", "params": {"message": "Hello group!", "groupId": "abc123=="}}
 ```
 
 #### With attachments
@@ -204,156 +283,28 @@ Response:
   "params": {
     "message": "See attached",
     "recipients": ["+4915100000000"],
-    "attachments": ["/tmp/photo.jpg"]
+    "attachments": ["/var/lib/signal-cli/attachments/photo.jpg"]
   }
 }
 ```
 
 ### Full method reference
 
-`groupId` fields always use **base64-encoded strings** in JSON (decoded to `ay` byte arrays before the DBus call). Timestamps are milliseconds since epoch.
+See [METHODS.md](METHODS.md) for the complete method reference including:
 
-#### Messaging
-
-| Method | Required params | Optional params | Returns |
-|--------|----------------|-----------------|---------|
-| `sendMessage` | `message`, `recipients[]` | `attachments[]` | `{timestamp}` |
-| `sendNoteToSelfMessage` | `message` | `attachments[]` | `{timestamp}` |
-| `sendMessageReaction` | `emoji`, `remove`, `targetAuthor`, `targetSentTimestamp`, `recipients[]` | — | `{timestamp}` |
-| `sendReadReceipt` | `recipient`, `targetSentTimestamps[]` | — | null |
-| `sendViewedReceipt` | `recipient`, `targetSentTimestamps[]` | — | null |
-| `sendTyping` | `recipient` | `stop` (default false) | null |
-| `sendRemoteDeleteMessage` | `targetSentTimestamp`, `recipients[]` | — | `{timestamp}` |
-| `sendEndSessionMessage` | `recipients[]` | — | null |
-| `sendPaymentNotification` | `receipt` (base64), `note`, `recipient` | — | `{timestamp}` |
-
-#### Groups
-
-| Method | Required params | Optional params | Returns |
-|--------|----------------|-----------------|---------|
-| `sendGroupMessage` | `message`, `groupId` | `attachments[]` | `{timestamp}` |
-| `sendGroupMessageReaction` | `emoji`, `remove`, `targetAuthor`, `targetSentTimestamp`, `groupId` | — | `{timestamp}` |
-| `sendGroupRemoteDeleteMessage` | `targetSentTimestamp`, `groupId` | — | `{timestamp}` |
-| `sendGroupTyping` | `groupId` | `stop` (default false) | null |
-| `createGroup` | `groupName` | `members[]`, `avatar` | `{groupId}` (base64) |
-| `listGroups` | — | — | `[{objectPath, groupId, name}]` |
-| `getGroupMembers` | `groupId` | — | `[numbers]` |
-| `joinGroup` | `inviteURI` | — | null |
-
-#### Contacts
-
-| Method | Required params | Optional params | Returns |
-|--------|----------------|-----------------|---------|
-| `getSelfNumber` | — | — | `{number}` |
-| `getContactName` | `number` | — | `{name}` |
-| `getContactNumber` | `name` | — | `{numbers[]}` |
-| `setContactName` | `number`, `name` | — | null |
-| `isContactBlocked` | `number` | — | `{blocked}` |
-| `setContactBlocked` | `number`, `block` | — | null |
-| `deleteContact` | `number` | — | null |
-| `deleteRecipient` | `number` | — | null |
-| `isRegistered` | — | `number` or `numbers[]` | `{result}` or `{results[]}` |
-| `listNumbers` | — | — | `{numbers[]}` |
-| `setExpirationTimer` | `number`, `expiration` (seconds) | — | null |
-
-#### Profile
-
-| Method | Required params | Optional params | Returns |
-|--------|----------------|-----------------|---------|
-| `updateProfile` | `name` or (`givenName` + `familyName`) | `about`, `aboutEmoji`, `avatar`, `remove` | null |
-
-#### Devices
-
-| Method | Required params | Optional params | Returns |
-|--------|----------------|-----------------|---------|
-| `addDevice` | `deviceUri` | — | null |
-| `listDevices` | — | — | `[{objectPath, id, name}]` |
-| `sendContacts` | — | — | null |
-| `sendSyncRequest` | — | — | null |
-
-#### Misc
-
-| Method | Required params | Returns |
-|--------|----------------|---------|
-| `version` | — | `{version}` |
-| `submitRateLimitChallenge` | `challenge`, `captcha` | null |
-| `uploadStickerPack` | `stickerPackPath` | `{url}` |
+- **Messaging** - `sendMessage`, `sendGroupMessage`, `sendMessageReaction`, etc.
+- **Groups** - `createGroup`, `listGroups`, `joinGroup`, etc.
+- **Group Management** - `quitGroup`, `addGroupMembers`, `addGroupAdmins`, etc.
+- **Contacts** - `getContactName`, `setContactName`, `isContactBlocked`, etc.
+- **Profile** - `updateProfile`
+- **Devices** - `addDevice`, `listDevices`, `sendSyncRequest`
+- **Identity** - `listIdentities`, `trustIdentity`
+- **Misc** - `version`, `uploadStickerPack`
 
 ## Client examples
 
-### Python (asyncio)
+See [CLIENT_EXAMPLES.md](CLIENT_EXAMPLES.md) for complete examples in:
 
-```python
-import asyncio
-import json
-import websockets
-
-async def run():
-    async with websockets.connect("ws://localhost:8765") as ws:
-        # Send a message
-        await ws.send(json.dumps({
-            "id": 1,
-            "method": "sendMessage",
-            "params": {"message": "Hi!", "recipients": ["+4915100000000"]},
-        }))
-        print("send result:", await ws.recv())
-
-        # Listen for incoming messages
-        async for raw in ws:
-            event = json.loads(raw)
-            if event.get("signal") == "MessageReceived":
-                _, sender, group_id, text, _ = event["args"]
-                print(f"{sender}: {text}")
-
-asyncio.run(run())
-```
-
-### JavaScript (Node.js / browser)
-
-```js
-const ws = new WebSocket("ws://localhost:8765");
-
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  if (data.signal === "MessageReceived") {
-    const [timestamp, sender, groupId, text] = data.args;
-    console.log(`${sender}: ${text}`);
-  }
-};
-
-// Send a message once connected
-ws.onopen = () => {
-  ws.send(JSON.stringify({
-    id: 1,
-    method: "sendMessage",
-    params: { message: "Hello!", recipients: ["+4915100000000"] },
-  }));
-};
-```
-
-### Simple echo bot (Python)
-
-```python
-import asyncio
-import json
-import websockets
-
-async def echo_bot():
-    async with websockets.connect("ws://localhost:8765") as ws:
-        async for raw in ws:
-            event = json.loads(raw)
-            if event.get("signal") != "MessageReceived":
-                continue
-            _, sender, group_id, text, _ = event["args"]
-            if not text:
-                continue
-            reply_params = (
-                {"message": f"echo: {text}", "groupId": group_id[0]}
-                if group_id
-                else {"message": f"echo: {text}", "recipients": [sender]}
-            )
-            method = "sendGroupMessage" if group_id else "sendMessage"
-            await ws.send(json.dumps({"id": 0, "method": method, "params": reply_params}))
-
-asyncio.run(echo_bot())
-```
+- **Python (asyncio)** — Basic connection, authentication, and message handling
+- **JavaScript (Node.js / browser)** — Browser-compatible WebSocket client
+- **Simple echo bot** — Replies to every message with an echo

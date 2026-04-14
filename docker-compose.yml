@@ -11,14 +11,18 @@ services:
       - SIGNAL_WS_PORT=8765
       - SIGNAL_DBUS_BUS=session
       - SIGNAL_LOG_LEVEL=INFO
+      # Uncomment and set to require auth on every WebSocket connection:
+      # - SIGNAL_WS_TOKEN=your-secret-token
+      # Required when signal-cli runs with multiple accounts:
+      # - SIGNAL_ACCOUNT=+4915...
     volumes:
       - signal-cli-data:/var/lib/signal-cli
       - swb-data:/var/lib/swb
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8765/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8765/health"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 60s
 
