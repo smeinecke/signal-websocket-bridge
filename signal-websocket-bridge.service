@@ -1,0 +1,26 @@
+[Unit]
+Description=signal-cli DBus WebSocket Bridge
+Documentation=https://github.com/comeso/signal-websocket-bridge
+After=dbus.service network.target signal-cli.service
+Wants=dbus.service
+Requires=signal-cli.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/swb-bridge
+Restart=on-failure
+RestartSec=5
+Environment=SIGNAL_WS_HOST=127.0.0.1
+Environment=SIGNAL_WS_PORT=8765
+Environment=SIGNAL_DBUS_BUS=system
+Environment=SIGNAL_LOG_LEVEL=INFO
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/swb
+WorkingDirectory=/var/lib/swb
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swb"
+version = "0.2.0"
+description = "signal-cli WebSocket bridge and bot toolkit"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "pyyaml>=6.0",
+    "websockets>=13.0",
+    "defusedxml>=0.7.1",
+]
+
+[project.scripts]
+swb-bridge = "swb.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.optional-dependencies]
+dbus = [
+    # dbus-python and PyGObject cannot be installed via pip on most distros.
+    # Install system packages instead:
+    #   Debian/Ubuntu: sudo apt install python3-dbus python3-gi
+    #   Arch:          sudo pacman -S python-dbus python-gobject
+]
+
+dev = [
+    "bandit[toml]>=1.7.5",
+    "pyright>=1.1.397",
+    "ruff>=0.11.2",
+    "vulture>=2.9.1",
+    "xenon>=0.9.3",
+]
+
+[tool.ruff]
+line-length = 160
+exclude = [".venv", ".vscode"]
+indent-width = 4  # Same as autopep8 default
+
+[tool.ruff.format]
+quote-style = "double"  # Or "single" if you prefer
+indent-style = "space"  # Use spaces instead of tabs
+line-ending = "lf"  # Keep consistency
+preview = true
+
+[tool.ruff.lint]
+select = ["E9", "F82"]  # Syntax errors + docstrings
+extend-select = ["I"]
+
+[tool.pyright]
+exclude = ["**/__pycache__", "**/node_modules", "**/dist", "**/build", "**/venv", "**/.venv", "**/tests"]
+reportMissingImports = "warning"
+pythonVersion = "3.11"
+
+[tool.bandit]
+exclude_dirs = [".venv", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "bandit[toml]>=1.8.3",
+    "pyright>=1.1.400",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.11.8",
+    "vulture>=2.14",
+    "xenon>=0.9.3",
+]
