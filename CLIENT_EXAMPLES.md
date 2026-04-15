@@ -1,8 +1,8 @@
 # Client Examples
 
-Example code for connecting to the signal-websocket-bridge via WebSocket or HTTP.
+Example code for connecting to the signal-websocket-bridge via HTTP or WebSocket.
 
-## Simple HTTP POST (curl)
+## HTTP POST API (curl)
 
 For one-off commands without maintaining a WebSocket connection:
 
@@ -10,39 +10,41 @@ For one-off commands without maintaining a WebSocket connection:
 # Check version / connectivity
 curl -X POST http://localhost:8765/send \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secret-token" \
   -d '{"method": "version"}'
 
 # Send a direct message
 curl -X POST http://localhost:8765/send \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secret-token" \
   -d '{"method": "sendMessage", "params": {"message": "Hello!", "recipients": ["+4915100000000"]}}'
 
 # Send a group message (groupId is base64-encoded)
 curl -X POST http://localhost:8765/send \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secret-token" \
   -d '{"method": "sendGroupMessage", "params": {"message": "Hello group!", "groupId": "<base64-group-id>"}}'
 
 # List all groups
 curl -X POST http://localhost:8765/send \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secret-token" \
   -d '{"method": "listGroups"}'
 
 # Get your own phone number
 curl -X POST http://localhost:8765/send \
   -H "Content-Type: application/json" \
-  -d '{"method": "getSelfNumber"}'
-
-# With authentication enabled
-curl -X POST http://localhost:8765/send \
-  -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-secret-token" \
-  -d '{"method": "version"}'
+  -d '{"method": "getSelfNumber"}'
 
 # Multi-account mode (specify which account to use)
 curl -X POST "http://localhost:8765/send?account=+4915100000000" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-secret-token" \
   -d '{"method": "listGroups"}'
 ```
+
+> **Note:** Omit the `Authorization` header if you are not using token authentication.
 
 ## Python (asyncio)
 
@@ -193,7 +195,7 @@ async def echo_bot():
 asyncio.run(echo_bot())
 ```
 
-## Python (HTTP requests)
+## HTTP POST API (Python requests)
 
 For simple synchronous calls without WebSocket overhead:
 
@@ -207,7 +209,20 @@ response = requests.post("http://localhost:8765/send", json={
 })
 print(response.json())
 
-# With authentication
+# List all groups
+response = requests.post("http://localhost:8765/send", json={
+    "method": "listGroups"
+})
+print(response.json())
+
+# Multi-account mode
+response = requests.post(
+    "http://localhost:8765/send?account=+4915100000000",
+    json={"method": "listGroups"}
+)
+print(response.json())
+
+# With authentication (Authorization header)
 response = requests.post(
     "http://localhost:8765/send",
     headers={"Authorization": "Bearer your-secret-token"},
@@ -215,10 +230,13 @@ response = requests.post(
 )
 print(response.json())
 
-# Multi-account mode
 response = requests.post(
-    "http://localhost:8765/send?account=+4915100000000",
-    json={"method": "listGroups"}
+    "http://localhost:8765/send",
+    headers={"Authorization": "Bearer your-secret-token"},
+    json={
+        "method": "sendMessage",
+        "params": {"message": "Hello!", "recipients": ["+4915100000000"]}
+    }
 )
 print(response.json())
 ```
