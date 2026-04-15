@@ -113,13 +113,19 @@ def connect_signal_interface(
             if _bus is None:
                 return False
 
+            # Probe signal-cli liveness via SignalControl.version() on the root
+            # path — version() only exists on SignalControl, not on the
+            # per-account org.asamk.Signal interface, so calling it on the
+            # account-specific path returns UnknownObject in dbus-java.
+            root_obj = _bus.get_object("org.asamk.Signal", "/org/asamk/Signal", introspect=False)
+            control = dbus.Interface(root_obj, "org.asamk.SignalControl")
+            control.version()  # type: ignore
+
             object_path = _build_object_path(config)
             if object_path == "/org/asamk/Signal":
                 object_path = _autodiscover_object_path(_bus)
-            _signal_object = _bus.get_object("org.asamk.Signal", object_path)
+            _signal_object = _bus.get_object("org.asamk.Signal", object_path, introspect=False)
             _signal_interface = dbus.Interface(_signal_object, "org.asamk.Signal")
-            # Verify connection works
-            _signal_interface.version()  # type: ignore
 
             _dbus_connected = True
             _reconnect_backoff = 1
