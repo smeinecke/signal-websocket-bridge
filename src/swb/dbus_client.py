@@ -113,26 +113,38 @@ def connect_signal_interface(
             if _bus is None:
                 return False
 
-            # Probe signal-cli liveness via SignalControl.version() on the root
-            # path — version() only exists on SignalControl, not on the
-            # per-account org.asamk.Signal interface, so calling it on the
-            # account-specific path returns UnknownObject in dbus-java.
             root_obj = _bus.get_object("org.asamk.Signal", "/org/asamk/Signal", introspect=False)
-            control = dbus.Interface(root_obj, "org.asamk.SignalControl")
-            control.version()  # type: ignore
 
-            object_path = _build_object_path(config)
-            if object_path == "/org/asamk/Signal":
-                object_path = _autodiscover_object_path(_bus)
+            # Detect single-account vs multi-account mode.
+            # Multi-account: root implements org.asamk.SignalControl (has listAccounts).
+            # Single-account: root implements org.asamk.Signal directly (no SignalControl).
+            try:
+                control = dbus.Interface(root_obj, "org.asamk.SignalControl")
+                control.version()  # type: ignore  — liveness probe + mode detection
+                single_account_mode = False
+            except dbus.exceptions.DBusException as exc:
+                if "UnknownMethod" not in exc.get_dbus_name():
+                    raise  # Transport error (ServiceUnknown etc.) — not a mode issue
+                # Single-account mode: root IS the account, implements org.asamk.Signal
+                dbus.Interface(root_obj, "org.asamk.Signal").version()  # type: ignore
+                single_account_mode = True
+                logging.info("signal-cli running in single-account mode")
 
-            # Verify the per-account object is exported. signal-cli registers the
-            # org.asamk.Signal name before its account objects are ready, so we
-            # confirm the path appears in listAccounts() before proceeding.
-            # (Introspect() is not supported on sub-objects in signal-cli's dbus-java.)
-            if object_path != "/org/asamk/Signal":
-                exported = [str(p) for p in control.listAccounts()]  # type: ignore
-                if object_path not in exported:
-                    raise dbus.exceptions.DBusException(f"Account path {object_path} not yet exported by signal-cli (exported: {exported})")
+            if single_account_mode:
+                # Account is always at the root path in single-account mode
+                object_path = "/org/asamk/Signal"
+            else:
+                object_path = _build_object_path(config)
+                if object_path == "/org/asamk/Signal":
+                    object_path = _autodiscover_object_path(_bus)
+
+                # Verify the per-account object is exported. signal-cli registers the
+                # org.asamk.Signal name before account objects are ready, so we confirm
+                # the path appears in listAccounts() before proceeding.
+                if object_path != "/org/asamk/Signal":
+                    exported = [str(p) for p in control.listAccounts()]  # type: ignore
+                    if object_path not in exported:
+                        raise dbus.exceptions.DBusException(f"Account path {object_path} not yet exported by signal-cli (exported: {exported})")
 
             _signal_object = _bus.get_object("org.asamk.Signal", object_path, introspect=False)
             _signal_interface = dbus.Interface(_signal_object, "org.asamk.Signal")
