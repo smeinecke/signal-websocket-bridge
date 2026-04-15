@@ -41,8 +41,12 @@ def mock_config_with_auth():
 
 @pytest.fixture
 def mock_dispatch():
-    """Create a mock dispatch function."""
-    return MagicMock(return_value={"result": "ok"})
+    """Create a mock dispatch factory that returns a dispatch function mock."""
+    dispatch_mock = MagicMock(return_value={"result": "ok"})
+    factory = MagicMock(return_value=dispatch_mock)
+    # Expose the inner dispatch mock so tests can set side_effect on it
+    factory.dispatch_mock = dispatch_mock
+    return factory
 
 
 @pytest.fixture
@@ -56,7 +60,7 @@ def server_no_auth(mock_config_no_auth, mock_dispatch, mock_asyncapi):
     """Create a WebSocketServer instance without auth."""
     return WebSocketServer(
         config=mock_config_no_auth,
-        dispatch_func=mock_dispatch,
+        dispatch_factory=mock_dispatch,
         asyncapi_json_func=mock_asyncapi,
         asyncapi_yaml_func=mock_asyncapi,
     )
@@ -67,7 +71,7 @@ def server_with_auth(mock_config_with_auth, mock_dispatch, mock_asyncapi):
     """Create a WebSocketServer instance with auth."""
     return WebSocketServer(
         config=mock_config_with_auth,
-        dispatch_func=mock_dispatch,
+        dispatch_factory=mock_dispatch,
         asyncapi_json_func=mock_asyncapi,
         asyncapi_yaml_func=mock_asyncapi,
     )
@@ -132,7 +136,7 @@ class TestWebsocketHandlerNoAuth:
         message = {"id": 1, "method": "version", "params": {}}
         response = {"id": 1, "result": {"version": "0.12.0"}}
 
-        mock_dispatch.return_value = {"version": "0.12.0"}
+        mock_dispatch.dispatch_mock.return_value = {"version": "0.12.0"}
 
         with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
             mock_ws.receive.side_effect = [
@@ -143,7 +147,7 @@ class TestWebsocketHandlerNoAuth:
 
             await server.websocket_handler(mock_request)
 
-            mock_dispatch.assert_called_once_with("version", {})
+            mock_dispatch.dispatch_mock.assert_called_once_with("version", {})
 
     async def test_websocket_invalid_json(self, server_no_auth, mock_config_no_auth):
         """Test WebSocket handling of invalid JSON."""
@@ -257,7 +261,7 @@ class TestClientTracking:
 
         server = WebSocketServer(
             config=mock_config_no_auth,
-            dispatch_func=mock_dispatch,
+            dispatch_factory=mock_dispatch,
             asyncapi_json_func=mock_asyncapi,
             asyncapi_yaml_func=mock_asyncapi,
             connected_clients=external_clients,
@@ -319,7 +323,7 @@ class TestDispatchErrors:
     async def test_dispatch_key_error(self, server_no_auth, mock_config_no_auth, mock_dispatch):
         """Test handling of KeyError from dispatch."""
         server = server_no_auth
-        mock_dispatch.side_effect = KeyError("missing_key")
+        mock_dispatch.dispatch_mock.side_effect = KeyError("missing_key")
 
         mock_ws = AsyncMock()
         mock_request = MagicMock()
@@ -341,7 +345,7 @@ class TestDispatchErrors:
     async def test_dispatch_type_error(self, server_no_auth, mock_config_no_auth, mock_dispatch):
         """Test handling of TypeError from dispatch."""
         server = server_no_auth
-        mock_dispatch.side_effect = TypeError("type error")
+        mock_dispatch.dispatch_mock.side_effect = TypeError("type error")
 
         mock_ws = AsyncMock()
         mock_request = MagicMock()
@@ -365,7 +369,7 @@ class TestDispatchErrors:
         from swb.websocket_server import DBusException
 
         server = server_no_auth
-        mock_dispatch.side_effect = DBusException("DBus error")
+        mock_dispatch.dispatch_mock.side_effect = DBusException("DBus error")
 
         mock_ws = AsyncMock()
         mock_request = MagicMock()
