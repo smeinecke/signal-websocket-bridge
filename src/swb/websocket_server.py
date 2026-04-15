@@ -136,11 +136,13 @@ class WebSocketServer:
                         # Connection errors trigger a background reconnect. The client
                         # should wait for {"signal":"Reconnected"} then retry the call.
                         reconnecting = not is_connected()
-                        await ws.send_str(json.dumps({
-                            "id": req_id,
-                            "error": str(exc),
-                            **({"reconnecting": True} if reconnecting else {}),
-                        }))
+                        await ws.send_str(
+                            json.dumps({
+                                "id": req_id,
+                                "error": str(exc),
+                                **({"reconnecting": True} if reconnecting else {}),
+                            })
+                        )
                     except (KeyError, TypeError, ValueError) as exc:
                         await ws.send_str(json.dumps({"id": req_id, "error": f"bad params: {exc}"}))
                 elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING):
