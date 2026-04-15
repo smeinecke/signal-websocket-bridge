@@ -124,12 +124,18 @@ def connect_signal_interface(
             object_path = _build_object_path(config)
             if object_path == "/org/asamk/Signal":
                 object_path = _autodiscover_object_path(_bus)
+
+            # Verify the per-account object is exported. signal-cli registers the
+            # org.asamk.Signal name before its account objects are ready, so we
+            # confirm the path appears in listAccounts() before proceeding.
+            # (Introspect() is not supported on sub-objects in signal-cli's dbus-java.)
+            if object_path != "/org/asamk/Signal":
+                exported = [str(p) for p in control.listAccounts()]  # type: ignore
+                if object_path not in exported:
+                    raise dbus.exceptions.DBusException(f"Account path {object_path} not yet exported by signal-cli (exported: {exported})")
+
             _signal_object = _bus.get_object("org.asamk.Signal", object_path, introspect=False)
             _signal_interface = dbus.Interface(_signal_object, "org.asamk.Signal")
-
-            # Verify the per-account object is actually exported by signal-cli.
-            # signal-cli may register org.asamk.Signal before exporting account objects.
-            dbus.Interface(_signal_object, "org.freedesktop.DBus.Introspectable").Introspect()  # type: ignore
 
             _dbus_connected = True
             _reconnect_backoff = 1

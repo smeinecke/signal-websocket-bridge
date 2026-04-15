@@ -107,6 +107,9 @@ class TestConnectSignalInterface:
 
         mock_bus.get_object.return_value = mock_object
         mock_interface.version.return_value = "0.12.0"
+        # Empty list → _autodiscover_object_path returns root path →
+        # per-account listAccounts() verification is skipped.
+        mock_interface.listAccounts.return_value = []
 
         connected_clients = set()
         clients_lock = threading.Lock()
@@ -122,7 +125,7 @@ class TestConnectSignalInterface:
                 )
 
         assert result is True
-        mock_interface.version.assert_called_once()  # Verify check
+        mock_interface.version.assert_called_once()  # Verify SignalControl.version() probe
 
     def test_connection_failure(self, mock_config, mock_loop, mock_signal_handler):
         """Test connection failure handling."""

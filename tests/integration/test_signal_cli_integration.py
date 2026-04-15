@@ -311,6 +311,28 @@ class TestSignalCliIntegration:
             assert "error" in response
             assert response.get("error") == "unauthorized"
 
+    @pytest.mark.asyncio
+    async def test_websocket_signal_method_dispatch(self, docker_container):
+        """Test that a real org.asamk.Signal method dispatches without UnknownObject.
+
+        Calls listGroups which requires the per-account DBus object to exist.
+        Without a registered account the result may be empty or an account-level
+        error — but it must never be an UnknownObject DBus error, which would
+        indicate the bridge's _signal_interface points to a non-existent path.
+        """
+        async with connect(WS_URL, open_timeout=5) as ws:
+            await ws.send(json.dumps({"auth": TEST_TOKEN}))
+            auth = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            assert auth.get("auth") == "ok", f"Auth failed: {auth}"
+
+            await ws.send(json.dumps({"id": 2, "method": "listGroups", "params": {}}))
+            response = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+
+        assert response.get("id") == 2
+        error = response.get("error", "")
+        assert "UnknownObject" not in error, f"listGroups returned UnknownObject — bridge _signal_interface points to a non-existent DBus path: {error}"
+        assert "result" in response or "error" in response
+
     def test_bridge_process_running(self, docker_container):
         """Verify the WebSocket bridge process is running."""
         result = subprocess.run(
