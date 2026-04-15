@@ -125,7 +125,7 @@ class TestConnectSignalInterface:
                 )
 
         assert result is True
-        mock_interface.version.assert_called_once()  # Verify SignalControl.version() probe
+        mock_interface.listAccounts.assert_called()  # Verify mode detection probe
 
     def test_connection_failure(self, mock_config, mock_loop, mock_signal_handler):
         """Test connection failure handling."""

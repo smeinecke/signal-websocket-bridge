@@ -115,36 +115,32 @@ def connect_signal_interface(
 
             root_obj = _bus.get_object("org.asamk.Signal", "/org/asamk/Signal", introspect=False)
 
-            # Detect single-account vs multi-account mode.
-            # Multi-account: root implements org.asamk.SignalControl (has listAccounts).
-            # Single-account: root implements org.asamk.Signal directly (no SignalControl).
+            # Detect mode via listAccounts() — it only exists on SignalControl
+            # (multi-account mode). signal-cli responds to version() regardless of
+            # which interface is specified, so version() alone cannot detect the mode.
             try:
                 control = dbus.Interface(root_obj, "org.asamk.SignalControl")
-                control.version()  # type: ignore  — liveness probe + mode detection
+                exported_accounts = [str(p) for p in control.listAccounts()]  # type: ignore
                 single_account_mode = False
             except dbus.exceptions.DBusException as exc:
                 if "UnknownMethod" not in exc.get_dbus_name():
-                    raise  # Transport error (ServiceUnknown etc.) — not a mode issue
+                    raise  # Transport/service error, not a mode issue
                 # Single-account mode: root IS the account, implements org.asamk.Signal
-                dbus.Interface(root_obj, "org.asamk.Signal").version()  # type: ignore
+                dbus.Interface(root_obj, "org.asamk.Signal").version()  # type: ignore  liveness probe
                 single_account_mode = True
+                exported_accounts = []
                 logging.info("signal-cli running in single-account mode")
 
             if single_account_mode:
-                # Account is always at the root path in single-account mode
                 object_path = "/org/asamk/Signal"
             else:
                 object_path = _build_object_path(config)
                 if object_path == "/org/asamk/Signal":
                     object_path = _autodiscover_object_path(_bus)
-
-                # Verify the per-account object is exported. signal-cli registers the
-                # org.asamk.Signal name before account objects are ready, so we confirm
-                # the path appears in listAccounts() before proceeding.
-                if object_path != "/org/asamk/Signal":
-                    exported = [str(p) for p in control.listAccounts()]  # type: ignore
-                    if object_path not in exported:
-                        raise dbus.exceptions.DBusException(f"Account path {object_path} not yet exported by signal-cli (exported: {exported})")
+                # Verify the per-account path is already exported. signal-cli
+                # registers the service name before account objects are ready.
+                if object_path != "/org/asamk/Signal" and object_path not in exported_accounts:
+                    raise dbus.exceptions.DBusException(f"Account path {object_path} not yet exported by signal-cli (exported: {exported_accounts})")
 
             _signal_object = _bus.get_object("org.asamk.Signal", object_path, introspect=False)
             _signal_interface = dbus.Interface(_signal_object, "org.asamk.Signal")
