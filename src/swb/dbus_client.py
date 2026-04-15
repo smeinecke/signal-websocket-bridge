@@ -106,7 +106,7 @@ def connect_signal_interface(
             if _bus is not None and signal_handler is not None:
                 try:
                     _bus.remove_signal_receiver(signal_handler, dbus_interface="org.asamk.Signal")
-                except Exception:
+                except Exception:  # nosec B110 - Intentionally ignore cleanup failures
                     pass
 
             _bus = get_bus(config)
