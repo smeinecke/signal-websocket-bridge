@@ -28,16 +28,23 @@ from swb.websocket_server import WebSocketServer
 _WATCHDOG_INTERVAL = 30  # seconds between liveness probes
 
 
-def _run_watchdog(get_iface, stop_event: threading.Event) -> None:
+def _run_watchdog(get_bus, stop_event: threading.Event) -> None:
     """Periodically probe signal-cli via DBus; trigger reconnect on failure."""
     while not stop_event.wait(_WATCHDOG_INTERVAL):
         if not is_connected():
             continue
         try:
-            get_iface().version()  # type: ignore[attr-defined]
+            # Probe via SignalControl.version() on the root path — version() only
+            # exists on SignalControl, not on the per-account org.asamk.Signal interface.
+            bus = get_bus()
+            root = bus.get_object("org.asamk.Signal", "/org/asamk/Signal", introspect=False)
+            dbus.Interface(root, "org.asamk.SignalControl").version()  # type: ignore[attr-defined]
         except dbus.exceptions.DBusException as exc:
             logging.warning(f"Watchdog detected DBus failure: {exc}")
-            handle_dbus_error(exc)
+            try:
+                handle_dbus_error(exc)
+            except dbus.exceptions.DBusException:
+                pass  # handle_dbus_error re-raises; reconnect loop is now running
 
 
 def main():
@@ -84,7 +91,7 @@ def main():
         return generate_asyncapi_spec(config, get_object_instance())
 
     stop_watchdog = threading.Event()
-    watchdog_thread = threading.Thread(target=_run_watchdog, args=(get_interface, stop_watchdog), daemon=True)
+    watchdog_thread = threading.Thread(target=_run_watchdog, args=(get_bus_instance, stop_watchdog), daemon=True)
     watchdog_thread.start()
 
     server = WebSocketServer(

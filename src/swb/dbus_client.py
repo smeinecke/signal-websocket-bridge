@@ -127,6 +127,10 @@ def connect_signal_interface(
             _signal_object = _bus.get_object("org.asamk.Signal", object_path, introspect=False)
             _signal_interface = dbus.Interface(_signal_object, "org.asamk.Signal")
 
+            # Verify the per-account object is actually exported by signal-cli.
+            # signal-cli may register org.asamk.Signal before exporting account objects.
+            dbus.Interface(_signal_object, "org.freedesktop.DBus.Introspectable").Introspect()  # type: ignore
+
             _dbus_connected = True
             _reconnect_backoff = 1
             logging.info(f"Connected to signal-cli at {object_path}")
