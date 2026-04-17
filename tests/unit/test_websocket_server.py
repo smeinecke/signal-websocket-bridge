@@ -442,8 +442,7 @@ class TestKeepAlive:
             mock_ws.receive.side_effect = [MagicMock(type=aiohttp.WSMsgType.CLOSED)]
             mock_ws.closed = True
 
-            with patch("swb.websocket_server.subscribe_receive") as mock_sub, \
-                 patch("swb.websocket_server.unsubscribe_receive") as mock_unsub:
+            with patch("swb.websocket_server.subscribe_receive") as mock_sub, patch("swb.websocket_server.unsubscribe_receive") as mock_unsub:
                 await server.websocket_handler(mock_request)
 
                 mock_sub.assert_called_once()
@@ -459,8 +458,7 @@ class TestKeepAlive:
         mock_request.remote = "127.0.0.1"
         mock_request.rel_url.query.get.return_value = None
 
-        with patch("swb.websocket_server.subscribe_receive") as mock_sub, \
-             patch("swb.websocket_server.unsubscribe_receive") as mock_unsub:
+        with patch("swb.websocket_server.subscribe_receive") as mock_sub, patch("swb.websocket_server.unsubscribe_receive") as mock_unsub:
 
             async def run_ws1():
                 with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws1):
@@ -503,9 +501,11 @@ class TestEventBuffer:
         mock_request = MagicMock()
         mock_request.remote = "127.0.0.1"
 
-        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws), \
-             patch("swb.websocket_server.subscribe_receive"), \
-             patch("swb.websocket_server.unsubscribe_receive"):
+        with (
+            patch("aiohttp.web.WebSocketResponse", return_value=mock_ws),
+            patch("swb.websocket_server.subscribe_receive"),
+            patch("swb.websocket_server.unsubscribe_receive"),
+        ):
             mock_ws.receive.side_effect = [MagicMock(type=aiohttp.WSMsgType.CLOSED)]
             mock_ws.closed = True
 
@@ -524,9 +524,11 @@ class TestEventBuffer:
         mock_request = MagicMock()
         mock_request.remote = "127.0.0.1"
 
-        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws), \
-             patch("swb.websocket_server.subscribe_receive"), \
-             patch("swb.websocket_server.unsubscribe_receive"):
+        with (
+            patch("aiohttp.web.WebSocketResponse", return_value=mock_ws),
+            patch("swb.websocket_server.subscribe_receive"),
+            patch("swb.websocket_server.unsubscribe_receive"),
+        ):
             mock_ws.receive.side_effect = [MagicMock(type=aiohttp.WSMsgType.CLOSED)]
             mock_ws.closed = True
 
@@ -552,9 +554,11 @@ class TestEventBuffer:
         mock_request = MagicMock()
         mock_request.remote = "127.0.0.1"
 
-        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws), \
-             patch("swb.websocket_server.subscribe_receive"), \
-             patch("swb.websocket_server.unsubscribe_receive"):
+        with (
+            patch("aiohttp.web.WebSocketResponse", return_value=mock_ws),
+            patch("swb.websocket_server.subscribe_receive"),
+            patch("swb.websocket_server.unsubscribe_receive"),
+        ):
             mock_ws.receive.side_effect = [MagicMock(type=aiohttp.WSMsgType.CLOSED)]
             mock_ws.closed = True
 

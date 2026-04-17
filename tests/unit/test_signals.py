@@ -173,18 +173,22 @@ class TestPathToAccount:
 
     def test_account_path(self):
         from swb.signals import _path_to_account
+
         assert _path_to_account("/org/asamk/Signal/_491234567890") == "+491234567890"
 
     def test_root_path_returns_none(self):
         from swb.signals import _path_to_account
+
         assert _path_to_account("/org/asamk/Signal") is None
 
     def test_empty_path_returns_none(self):
         from swb.signals import _path_to_account
+
         assert _path_to_account("") is None
 
     def test_international_number(self):
         from swb.signals import _path_to_account
+
         assert _path_to_account("/org/asamk/Signal/_15555550100") == "+15555550100"
 
 
@@ -194,6 +198,7 @@ class TestSignalHandlerAccount:
     def test_account_included_for_account_path(self):
         """handler() adds 'account' key when emitted from a per-account path."""
         import json
+
         clients = set()
         lock = MagicMock()
         lock.__enter__ = MagicMock(return_value=None)
@@ -210,6 +215,7 @@ class TestSignalHandlerAccount:
 
         def capture(coro, lp):
             import asyncio
+
             fut = MagicMock()
             fut.add_done_callback = MagicMock()
             # Extract the payload from the coroutine args
@@ -227,8 +233,7 @@ class TestSignalHandlerAccount:
 
         def fake_run(coro, lp):
             # Extract payload from the coroutine
-            captured.append(coro.cr_frame.f_locals.get("payload") or
-                            getattr(coro, "__wrapped__", None))
+            captured.append(coro.cr_frame.f_locals.get("payload") or getattr(coro, "__wrapped__", None))
             fut = MagicMock()
             fut.add_done_callback = MagicMock()
             return fut
@@ -247,13 +252,17 @@ class TestSignalHandlerAccount:
         # Since we can't easily intercept the coroutine, test the payload_dict construction
         # directly via serialize_signal + account logic
         from swb.signals import _path_to_account, serialize_signal
-        payload_dict = serialize_signal("MessageReceived", (
-            dbus.Int64(1234567890),
-            dbus.String("+491234567890"),
-            dbus.Array([], signature="y"),
-            dbus.String("Hello"),
-            dbus.Array([], signature="s"),
-        ))
+
+        payload_dict = serialize_signal(
+            "MessageReceived",
+            (
+                dbus.Int64(1234567890),
+                dbus.String("+491234567890"),
+                dbus.Array([], signature="y"),
+                dbus.String("Hello"),
+                dbus.Array([], signature="s"),
+            ),
+        )
         account = _path_to_account("/org/asamk/Signal/_491234567890")
         if account:
             payload_dict["account"] = account
@@ -263,10 +272,14 @@ class TestSignalHandlerAccount:
     def test_no_account_for_root_path(self):
         """No 'account' key when emitted from the root path (single-account mode)."""
         from swb.signals import _path_to_account, serialize_signal
-        payload_dict = serialize_signal("ReceiptReceived", (
-            dbus.Int64(1234567890),
-            dbus.String("+491234567890"),
-        ))
+
+        payload_dict = serialize_signal(
+            "ReceiptReceived",
+            (
+                dbus.Int64(1234567890),
+                dbus.String("+491234567890"),
+            ),
+        )
         account = _path_to_account("/org/asamk/Signal")
         if account:
             payload_dict["account"] = account

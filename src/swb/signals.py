@@ -20,7 +20,7 @@ def _path_to_account(path: str) -> str | None:
     """
     if not path.startswith(_SIGNAL_PREFIX):
         return None
-    suffix = path[len(_SIGNAL_PREFIX):]
+    suffix = path[len(_SIGNAL_PREFIX) :]
     if suffix.startswith("_"):
         return "+" + suffix[1:]
     return suffix or None
