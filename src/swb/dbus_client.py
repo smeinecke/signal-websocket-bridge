@@ -22,7 +22,6 @@ _reconnect_backoff = 1  # seconds, doubles up to 60s cap
 _dbus_connected = False
 _reconnect_thread: threading.Thread | None = None
 _initial_connect = True  # distinguishes first connect from reconnect
-_single_account_mode = False  # True when signal-cli runs without multi-account support
 
 # Stored at connect time so the reconnect thread can use them
 _config: Config | None = None
@@ -91,7 +90,6 @@ def connect_signal_interface(
     """Connect to signal-cli DBus interface. Returns True on success."""
     global _bus, _signal_object, _signal_interface, _dbus_connected, _reconnect_backoff
     global _loop, _signal_handler, _connected_clients, _clients_lock, _config, _initial_connect
-    global _single_account_mode
 
     _config = config
     _loop = loop
@@ -133,7 +131,6 @@ def connect_signal_interface(
                 exported_accounts = []
                 logging.info("signal-cli running in single-account mode")
 
-            _single_account_mode = single_account_mode
             if single_account_mode:
                 object_path = "/org/asamk/Signal"
             else:
@@ -284,11 +281,6 @@ def unsubscribe_receive() -> None:
 def is_connected() -> bool:
     """Check if DBus connection is active."""
     return _dbus_connected
-
-
-def is_single_account_mode() -> bool:
-    """Return True when signal-cli runs without multi-account support (single account at root path)."""
-    return _single_account_mode
 
 
 def get_interface() -> dbus.Interface:

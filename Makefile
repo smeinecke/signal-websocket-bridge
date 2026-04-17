@@ -49,7 +49,7 @@ integration-test-smoke:
 	pytest tests/integration/test_signal_cli_integration.py::TestSignalCliIntegration::test_signal_cli_version_via_dbus -v --tb=short
 
 # Validate the code (format + check)
-validate: format check complexity bandit pyright
+validate: format check complexity bandit vulture pyright
 	@echo "Validation passed. Your code is ready to push."
 
 # Docker build targets
