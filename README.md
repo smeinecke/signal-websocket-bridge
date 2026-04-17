@@ -191,6 +191,19 @@ All flags can also be set via environment variables:
 | `SIGNAL_WS_TOKEN` | `--token` | _(none)_ | Auth token - required if exposed beyond localhost |
 | `SIGNAL_ACCOUNT` | `--account` | _(none)_ | Phone number for multi-account mode (e.g. `+4915...`) |
 | `SIGNAL_LOG_LEVEL` | `--log-level` | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `SIGNAL_BUFFER_SIZE` | `--buffer-size` | `0` | Number of signal events to buffer for replay on client reconnect (0 = disabled) |
+
+The Docker image additionally exposes:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SIGNAL_CLI_OPTS` | _(none)_ | Extra flags appended to the `signal-cli daemon --dbus` command inside the container |
+
+Example - enable manual receive mode so signal-cli only keeps the Signal WebSocket alive while a client is connected to the bridge:
+
+```
+SIGNAL_CLI_OPTS=--receive-mode=manual
+```
 
 > **System vs session bus**: signal-cli started as a systemd service or with `--system`
 > uses the system bus. A user-level install uses the session bus. When in doubt:
@@ -279,6 +292,16 @@ When `--token` / `SIGNAL_WS_TOKEN` is set, the first message from the client mus
 {"error": "unauthorized"}
 ```
 
+### Event buffer (replay on reconnect)
+
+When `SIGNAL_BUFFER_SIZE` / `--buffer-size` is set to a positive integer, the bridge keeps a ring buffer of the last N incoming signal events. Every new client receives the buffered events immediately after connecting (before the normal message loop), so brief disconnects don't cause missed messages.
+
+The buffer holds raw signal events only (not bridge control messages like `Disconnected`/`Reconnected`). Events are stored in arrival order; the oldest are dropped once the buffer is full. Each event carries a stable `event_id` (UUID v4) assigned on arrival - the same ID appears in the live broadcast and in the replay, so clients can deduplicate by discarding events whose `event_id` they have already processed.
+
+```
+SIGNAL_BUFFER_SIZE=100   # keep last 100 events
+```
+
 ### Bridge events (server → client, push)
 
 The bridge emits system events when the DBus connection state changes:
@@ -292,6 +315,10 @@ The bridge emits system events when the DBus connection state changes:
 
 Known signals are delivered with **named fields**. Unknown or future signals fall back to a generic `{signal, args[]}` format.
 
+Every signal event includes a unique `"event_id"` (UUID v4) generated on arrival. The same ID appears in the live broadcast and in the event buffer replay, so clients can deduplicate by tracking seen IDs.
+
+In **multi-account mode**, every event also includes an `"account"` field with the E.164 number of the receiving account. This lets clients connected without a `?account=` filter tell which account each event belongs to. In single-account mode the field is absent.
+
 #### `MessageReceived`
 
 Fired when a direct or group message arrives.
@@ -299,15 +326,17 @@ Fired when a direct or group message arrives.
 ```json
 {
   "signal": "MessageReceived",
+  "event_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "account": "+4915100000000",
   "timestamp": 1713000000000,
-  "sender": "+4915100000000",
+  "sender": "+4916200000000",
   "groupId": null,
   "message": "Hello!",
   "attachments": []
 }
 ```
 
-`groupId` is a base64 string for group messages, `null` for direct messages.
+`groupId` is a base64 string for group messages, `null` for direct messages. `account` is only present in multi-account mode.
 
 #### `SyncMessageReceived`
 
@@ -316,6 +345,8 @@ Fired when *you* send a message from a linked device.
 ```json
 {
   "signal": "SyncMessageReceived",
+  "event_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+  "account": "+4915100000000",
   "timestamp": 1713000000000,
   "sender": "+4915100000000",
   "destination": "+4916200000000",
@@ -332,8 +363,10 @@ Fired when a recipient's device delivers your message.
 ```json
 {
   "signal": "ReceiptReceived",
+  "event_id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+  "account": "+4915100000000",
   "timestamp": 1713000000000,
-  "sender": "+4915100000000"
+  "sender": "+4916200000000"
 }
 ```
 

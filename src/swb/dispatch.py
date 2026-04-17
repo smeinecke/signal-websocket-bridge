@@ -86,7 +86,7 @@ class MethodDispatcher:
     """Dispatches JSON-RPC method calls to signal-cli DBus interface.
 
     Uses callable getters for the interface and bus so that reconnections
-    are transparent — stale references are never held across a disconnect.
+    are transparent - stale references are never held across a disconnect.
     """
 
     def __init__(self, get_interface, get_bus):

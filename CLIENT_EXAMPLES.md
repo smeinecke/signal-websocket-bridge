@@ -82,9 +82,11 @@ async def run():
             # Incoming signal
             if "signal" in event:
                 if event["signal"] == "MessageReceived":
-                    print(f"{event['sender']}: {event['message']}")
+                    account = event.get("account", "")  # present in multi-account mode
+                    prefix = f"[{account}] " if account else ""
+                    print(f"{prefix}{event['sender']}: {event['message']}")
                 elif event["signal"] == "Reconnected":
-                    print("Reconnected — retrying pending calls")
+                    print("Reconnected - retrying pending calls")
                     for msg in list(pending.values()):
                         await ws.send(json.dumps(msg))
                 continue
@@ -93,14 +95,14 @@ async def run():
             req_id = event.get("id")
             if "error" in event:
                 if event.get("reconnecting"):
-                    # Transient — keep in pending, will retry after Reconnected
+                    # Transient - keep in pending, will retry after Reconnected
                     print(f"Request {req_id} failed during reconnect, will retry")
                 else:
-                    # Permanent error — remove from pending
+                    # Permanent error - remove from pending
                     pending.pop(req_id, None)
                     print(f"Request {req_id} error: {event['error']}")
             else:
-                pending.pop(req_id, None)  # success — no longer needs retry
+                pending.pop(req_id, None)  # success - no longer needs retry
                 print(f"Request {req_id} result: {event['result']}")
 
 asyncio.run(run())
@@ -135,11 +137,12 @@ ws.onmessage = (event) => {
   // Incoming signal
   if (data.signal) {
     if (data.signal === "MessageReceived") {
-      console.log(`${data.sender}: ${data.message}`);
+      const prefix = data.account ? `[${data.account}] ` : "";  // multi-account mode
+      console.log(`${prefix}${data.sender}: ${data.message}`);
     } else if (data.signal === "Disconnected") {
       console.warn("Bridge lost connection to signal-cli, waiting for Reconnected...");
     } else if (data.signal === "Reconnected") {
-      console.log("Reconnected — retrying pending calls");
+      console.log("Reconnected - retrying pending calls");
       for (const msg of pending.values()) {
         ws.send(JSON.stringify(msg));
       }
@@ -150,7 +153,7 @@ ws.onmessage = (event) => {
   // RPC response
   if (data.error) {
     if (data.reconnecting) {
-      // Transient — keep in pending, will retry after Reconnected
+      // Transient - keep in pending, will retry after Reconnected
       console.warn(`Request ${data.id} failed during reconnect, will retry`);
     } else {
       // Permanent error
@@ -239,4 +242,47 @@ response = requests.post(
     }
 )
 print(response.json())
+```
+
+## Event buffer (replay on reconnect)
+
+When the bridge is started with `SIGNAL_BUFFER_SIZE=N` (or `--buffer-size N`), it keeps a rolling buffer of the last N signal events. Every new client receives those events immediately after connecting, before the live stream begins - so a brief disconnect doesn't cause missed messages.
+
+```python
+import asyncio
+import json
+import websockets
+
+TOKEN = "your-secret-token"
+
+async def run():
+    async with websockets.connect("ws://localhost:8765/ws") as ws:
+        await ws.send(json.dumps({"auth": TOKEN}))
+        assert json.loads(await ws.recv()) == {"auth": "ok"}
+
+        # Any events buffered while we were disconnected are replayed here
+        # before new live events arrive - handle them the same way.
+        async for raw in ws:
+            event = json.loads(raw)
+            if event.get("signal") == "MessageReceived":
+                account = event.get("account", "")
+                prefix = f"[{account}] " if account else ""
+                print(f"{prefix}{event['sender']}: {event['message']}")
+
+asyncio.run(run())
+```
+
+The buffer is a fixed-size ring: once full, the oldest event is dropped to make room. Each event carries a stable `event_id` (UUID v4) that is identical in the live broadcast and the replay - use it to deduplicate:
+
+```python
+seen_ids = set()
+
+async for raw in ws:
+    event = json.loads(raw)
+    event_id = event.get("event_id")
+    if event_id and event_id in seen_ids:
+        continue  # already processed during live delivery
+    if event_id:
+        seen_ids.add(event_id)
+    # ... handle event ...
 ```

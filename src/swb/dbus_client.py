@@ -22,6 +22,7 @@ _reconnect_backoff = 1  # seconds, doubles up to 60s cap
 _dbus_connected = False
 _reconnect_thread: threading.Thread | None = None
 _initial_connect = True  # distinguishes first connect from reconnect
+_single_account_mode = False  # True when signal-cli runs without multi-account support
 
 # Stored at connect time so the reconnect thread can use them
 _config: Config | None = None
@@ -50,7 +51,7 @@ def _autodiscover_object_path(bus: dbus.Bus) -> str:
 
     Multi-account mode: calls SignalControl.listAccounts() to find account sub-paths.
     Single-account mode: the root object already implements org.asamk.Signal directly,
-    so listAccounts() will fail — fall back to the root path in that case.
+    so listAccounts() will fail - fall back to the root path in that case.
     """
     root = bus.get_object("org.asamk.Signal", "/org/asamk/Signal")
     try:
@@ -90,6 +91,7 @@ def connect_signal_interface(
     """Connect to signal-cli DBus interface. Returns True on success."""
     global _bus, _signal_object, _signal_interface, _dbus_connected, _reconnect_backoff
     global _loop, _signal_handler, _connected_clients, _clients_lock, _config, _initial_connect
+    global _single_account_mode
 
     _config = config
     _loop = loop
@@ -115,7 +117,7 @@ def connect_signal_interface(
 
             root_obj = _bus.get_object("org.asamk.Signal", "/org/asamk/Signal", introspect=False)
 
-            # Detect mode via listAccounts() — it only exists on SignalControl
+            # Detect mode via listAccounts() - it only exists on SignalControl
             # (multi-account mode). signal-cli responds to version() regardless of
             # which interface is specified, so version() alone cannot detect the mode.
             try:
@@ -131,6 +133,7 @@ def connect_signal_interface(
                 exported_accounts = []
                 logging.info("signal-cli running in single-account mode")
 
+            _single_account_mode = single_account_mode
             if single_account_mode:
                 object_path = "/org/asamk/Signal"
             else:
@@ -154,6 +157,7 @@ def connect_signal_interface(
                     signal_handler,
                     dbus_interface="org.asamk.Signal",
                     member_keyword="member",
+                    path_keyword="path",
                 )
 
             # Clear stale introspection cache so /asyncapi reflects the live instance
@@ -165,6 +169,12 @@ def connect_signal_interface(
                 _initial_connect = False
             else:
                 _broadcast_to_clients({"signal": "Reconnected"})
+                # Re-subscribe for keep-alive if clients were connected during the outage
+                if _connected_clients and _signal_interface is not None:
+                    try:
+                        _signal_interface.subscribeReceive()  # type: ignore[attr-defined]
+                    except Exception as exc:
+                        logging.warning(f"subscribeReceive after reconnect failed: {exc}")
 
             return True
 
@@ -243,9 +253,42 @@ def handle_dbus_error(exc: Exception) -> None:
     raise exc
 
 
+def subscribe_receive() -> None:
+    """Register a keep-alive token for the unidentified Signal WebSocket.
+
+    Calls subscribeReceive() on signal-cli, which increments an internal counter and
+    registers keep-alive tokens on both Signal WebSockets when the counter goes 0→1.
+    Call once per connected bridge client (or at least on first-client transition).
+    """
+    try:
+        get_interface().subscribeReceive()  # type: ignore[attr-defined]
+        logging.debug("subscribeReceive() called - keep-alive active")
+    except Exception as exc:
+        logging.warning(f"subscribeReceive failed: {exc}")
+
+
+def unsubscribe_receive() -> None:
+    """Remove a keep-alive token, stopping keep-alive when the counter reaches zero.
+
+    Calls unsubscribeReceive() on signal-cli, which decrements the internal counter
+    and removes keep-alive tokens when the counter reaches zero.
+    Call once per disconnecting bridge client (or at least on last-client transition).
+    """
+    try:
+        get_interface().unsubscribeReceive()  # type: ignore[attr-defined]
+        logging.debug("unsubscribeReceive() called")
+    except Exception as exc:
+        logging.warning(f"unsubscribeReceive failed: {exc}")
+
+
 def is_connected() -> bool:
     """Check if DBus connection is active."""
     return _dbus_connected
+
+
+def is_single_account_mode() -> bool:
+    """Return True when signal-cli runs without multi-account support (single account at root path)."""
+    return _single_account_mode
 
 
 def get_interface() -> dbus.Interface:

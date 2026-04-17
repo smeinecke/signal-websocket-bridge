@@ -10,7 +10,7 @@ import aiohttp
 from aiohttp import web
 
 from swb.config import Config
-from swb.dbus_client import is_connected
+from swb.dbus_client import is_connected, subscribe_receive, unsubscribe_receive
 
 # Handle missing dbus module (system package)
 try:
@@ -32,6 +32,7 @@ class WebSocketServer:
         asyncapi_yaml_func: Callable,
         connected_clients: set | None = None,
         clients_lock: threading.Lock | None = None,
+        event_buffer=None,
     ):
         self.config = config
         self.dispatch_factory = dispatch_factory
@@ -42,6 +43,7 @@ class WebSocketServer:
         # and the WebSocket server share the same client tracking objects.
         self.connected_clients: set[web.WebSocketResponse] = connected_clients if connected_clients is not None else set()
         self.clients_lock: threading.Lock = clients_lock if clients_lock is not None else threading.Lock()
+        self.event_buffer = event_buffer  # deque or None; shared with signal handler
 
     async def health_handler(self, request: web.Request) -> web.Response:
         """Liveness/readiness probe. Returns 200 when connected to DBus, 503 when reconnecting."""
@@ -111,7 +113,17 @@ class WebSocketServer:
 
         with self.clients_lock:
             self.connected_clients.add(ws)
+            first_client = len(self.connected_clients) == 1
         logging.info(f"WebSocket client connected from {peer}")
+        if first_client:
+            subscribe_receive()
+
+        if self.event_buffer is not None:
+            snapshot = list(self.event_buffer)
+            if snapshot:
+                logging.debug(f"Replaying {len(snapshot)} buffered events to new client from {peer}")
+                for payload in snapshot:
+                    await ws.send_str(payload)
 
         try:
             while True:
@@ -154,7 +166,10 @@ class WebSocketServer:
         finally:
             with self.clients_lock:
                 self.connected_clients.discard(ws)
+                last_client = len(self.connected_clients) == 0
             logging.info("WebSocket client disconnected")
+            if last_client:
+                unsubscribe_receive()
 
         return ws
 

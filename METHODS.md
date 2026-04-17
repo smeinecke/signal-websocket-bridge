@@ -27,26 +27,26 @@ connection to signal-cli, any in-flight call returns an error with `"reconnectin
 |--------|----------------|-----------------|---------|
 | `sendMessage` | `message`, `recipients[]` | `attachments[]` | `{timestamp}` |
 | `sendNoteToSelfMessage` | `message` | `attachments[]` | `{timestamp}` |
-| `sendMessageReaction` | `emoji`, `remove`, `targetAuthor`, `targetSentTimestamp`, `recipients[]` | — | `{timestamp}` |
-| `sendReadReceipt` | `recipient`, `targetSentTimestamps[]` | — | null |
-| `sendViewedReceipt` | `recipient`, `targetSentTimestamps[]` | — | null |
+| `sendMessageReaction` | `emoji`, `remove`, `targetAuthor`, `targetSentTimestamp`, `recipients[]` | - | `{timestamp}` |
+| `sendReadReceipt` | `recipient`, `targetSentTimestamps[]` | - | null |
+| `sendViewedReceipt` | `recipient`, `targetSentTimestamps[]` | - | null |
 | `sendTyping` | `recipient` | `stop` (default false) | null |
-| `sendRemoteDeleteMessage` | `targetSentTimestamp`, `recipients[]` | — | `{timestamp}` |
-| `sendEndSessionMessage` | `recipients[]` | — | null |
-| `sendPaymentNotification` | `receipt` (base64), `note`, `recipient` | — | `{timestamp}` |
+| `sendRemoteDeleteMessage` | `targetSentTimestamp`, `recipients[]` | - | `{timestamp}` |
+| `sendEndSessionMessage` | `recipients[]` | - | null |
+| `sendPaymentNotification` | `receipt` (base64), `note`, `recipient` | - | `{timestamp}` |
 
 ## Groups
 
 | Method | Required params | Optional params | Returns |
 |--------|----------------|-----------------|---------|
 | `sendGroupMessage` | `message`, `groupId` | `attachments[]` | `{timestamp}` |
-| `sendGroupMessageReaction` | `emoji`, `remove`, `targetAuthor`, `targetSentTimestamp`, `groupId` | — | `{timestamp}` |
-| `sendGroupRemoteDeleteMessage` | `targetSentTimestamp`, `groupId` | — | `{timestamp}` |
+| `sendGroupMessageReaction` | `emoji`, `remove`, `targetAuthor`, `targetSentTimestamp`, `groupId` | - | `{timestamp}` |
+| `sendGroupRemoteDeleteMessage` | `targetSentTimestamp`, `groupId` | - | `{timestamp}` |
 | `sendGroupTyping` | `groupId` | `stop` (default false) | null |
 | `createGroup` | `groupName` | `members[]`, `avatar` | `{groupId}` (base64) |
-| `listGroups` | — | — | `[{objectPath, groupId, name}]` |
-| `getGroupMembers` | `groupId` | — | `[numbers]` |
-| `joinGroup` | `inviteURI` | — | null |
+| `listGroups` | - | - | `[{objectPath, groupId, name}]` |
+| `getGroupMembers` | `groupId` | - | `[numbers]` |
+| `joinGroup` | `inviteURI` | - | null |
 
 ## Group Management
 
@@ -67,17 +67,17 @@ These methods operate on a specific group. All require `groupId` (base64).
 
 | Method | Required params | Optional params | Returns |
 |--------|----------------|-----------------|---------|
-| `getSelfNumber` | — | — | `{number}` |
-| `getContactName` | `number` | — | `{name}` |
-| `getContactNumber` | `name` | — | `{numbers[]}` |
-| `setContactName` | `number`, `name` | — | null |
-| `isContactBlocked` | `number` | — | `{blocked}` |
-| `setContactBlocked` | `number`, `block` | — | null |
-| `deleteContact` | `number` | — | null |
-| `deleteRecipient` | `number` | — | null |
-| `isRegistered` | — | `number` or `numbers[]` | `{result}` or `{results[]}` |
-| `listNumbers` | — | — | `{numbers[]}` |
-| `setExpirationTimer` | `number`, `expiration` (seconds) | — | null |
+| `getSelfNumber` | - | - | `{number}` |
+| `getContactName` | `number` | - | `{name}` |
+| `getContactNumber` | `name` | - | `{numbers[]}` |
+| `setContactName` | `number`, `name` | - | null |
+| `isContactBlocked` | `number` | - | `{blocked}` |
+| `setContactBlocked` | `number`, `block` | - | null |
+| `deleteContact` | `number` | - | null |
+| `deleteRecipient` | `number` | - | null |
+| `isRegistered` | - | `number` or `numbers[]` | `{result}` or `{results[]}` |
+| `listNumbers` | - | - | `{numbers[]}` |
+| `setExpirationTimer` | `number`, `expiration` (seconds) | - | null |
 
 ## Profile
 
@@ -89,16 +89,16 @@ These methods operate on a specific group. All require `groupId` (base64).
 
 | Method | Required params | Optional params | Returns |
 |--------|----------------|-----------------|---------|
-| `addDevice` | `deviceUri` | — | null |
-| `listDevices` | — | — | `[{objectPath, id, name}]` |
-| `sendContacts` | — | — | null |
-| `sendSyncRequest` | — | — | null |
+| `addDevice` | `deviceUri` | - | null |
+| `listDevices` | - | - | `[{objectPath, id, name}]` |
+| `sendContacts` | - | - | null |
+| `sendSyncRequest` | - | - | null |
 
 ## Identity
 
 | Method | Required params | Returns |
 |--------|----------------|---------|
-| `listIdentities` | — | `[{objectPath, uuid, number}]` |
+| `listIdentities` | - | `[{objectPath, uuid, number}]` |
 | `trustIdentity` | `number` | null |
 | `trustIdentityVerified` | `number`, `safetyNumber` | null |
 
@@ -106,6 +106,6 @@ These methods operate on a specific group. All require `groupId` (base64).
 
 | Method | Required params | Returns |
 |--------|----------------|---------|
-| `version` | — | `{version}` |
+| `version` | - | `{version}` |
 | `submitRateLimitChallenge` | `challenge`, `captcha` | null |
 | `uploadStickerPack` | `stickerPackPath` | `{url}` |

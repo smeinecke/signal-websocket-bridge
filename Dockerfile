@@ -107,6 +107,8 @@ ENV SIGNAL_WS_HOST=0.0.0.0 \
     SIGNAL_LOG_LEVEL=INFO \
     SIGNAL_WS_TOKEN="" \
     SIGNAL_ACCOUNT="" \
+    SIGNAL_CLI_OPTS="" \
+    SIGNAL_BUFFER_SIZE=0 \
     PATH="/app/.venv/bin:${PATH}" \
     PYTHONPATH="/usr/lib/python3/dist-packages"
 

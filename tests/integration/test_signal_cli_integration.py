@@ -205,13 +205,13 @@ class TestSignalCliIntegration:
         assert "info" in data
         assert "channels" in data
 
-        # Introspection actually populated the spec — non-empty means DBus worked
+        # Introspection actually populated the spec - non-empty means DBus worked
         schemas = data.get("components", {}).get("schemas", {})
         messages = data.get("components", {}).get("messages", {})
-        assert schemas, f"AsyncAPI spec has no schemas — DBus introspection likely failed. Spec components: {list(data.get('components', {}).keys())}"
-        assert messages, "AsyncAPI spec has no messages — DBus introspection likely failed."
+        assert schemas, f"AsyncAPI spec has no schemas - DBus introspection likely failed. Spec components: {list(data.get('components', {}).keys())}"
+        assert messages, "AsyncAPI spec has no messages - DBus introspection likely failed."
 
-        # signal-cli always exposes a 'version' method — reliable canary
+        # signal-cli always exposes a 'version' method - reliable canary
         assert "version_request" in schemas, f"Expected 'version_request' schema from signal-cli DBus introspection. Got schemas: {list(schemas.keys())}"
         assert "version" in messages, f"Expected 'version' message. Got messages: {list(messages.keys())}"
 
@@ -317,7 +317,7 @@ class TestSignalCliIntegration:
 
         Calls listGroups which requires the per-account DBus object to exist.
         Without a registered account the result may be empty or an account-level
-        error — but it must never be an UnknownObject DBus error, which would
+        error - but it must never be an UnknownObject DBus error, which would
         indicate the bridge's _signal_interface points to a non-existent path.
         """
         async with connect(WS_URL, open_timeout=5) as ws:
@@ -330,7 +330,7 @@ class TestSignalCliIntegration:
 
         assert response.get("id") == 2
         error = response.get("error", "")
-        assert "UnknownObject" not in error, f"listGroups returned UnknownObject — bridge _signal_interface points to a non-existent DBus path: {error}"
+        assert "UnknownObject" not in error, f"listGroups returned UnknownObject - bridge _signal_interface points to a non-existent DBus path: {error}"
         assert "result" in response or "error" in response
 
     def test_bridge_process_running(self, docker_container):

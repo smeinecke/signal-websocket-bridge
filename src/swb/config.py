@@ -16,6 +16,7 @@ class Config:
     token: str | None
     account: str | None
     log_level: str
+    buffer_size: int  # max events to buffer for replay; 0 = disabled
 
 
 def _parse_args() -> argparse.Namespace:
@@ -63,6 +64,12 @@ def _parse_args() -> argparse.Namespace:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level (env: SIGNAL_LOG_LEVEL, default: INFO)",
     )
+    parser.add_argument(
+        "--buffer-size",
+        type=int,
+        default=int(os.environ.get("SIGNAL_BUFFER_SIZE", "0")),
+        help="Number of signal events to buffer for replay on client reconnect (env: SIGNAL_BUFFER_SIZE, default: 0 = disabled)",
+    )
     return parser.parse_args()
 
 
@@ -86,4 +93,5 @@ def load_config() -> Config:
         token=args.token,
         account=args.account,
         log_level=args.log_level,
+        buffer_size=max(0, args.buffer_size),
     )

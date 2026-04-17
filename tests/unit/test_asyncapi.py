@@ -29,6 +29,7 @@ def mock_config():
         token=None,
         account=None,
         log_level="INFO",
+        buffer_size=0,
     )
 
 

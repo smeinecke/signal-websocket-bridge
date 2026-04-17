@@ -25,7 +25,7 @@ class TestBuildObjectPath:
 
     def test_default_path(self):
         """Test default path without account."""
-        config = Config(bus="system", host="localhost", port=8765, token=None, account=None, log_level="INFO")
+        config = Config(bus="system", host="localhost", port=8765, token=None, account=None, log_level="INFO", buffer_size=0)
         assert _build_object_path(config) == "/org/asamk/Signal"
 
     def test_path_with_account(self):
@@ -37,6 +37,7 @@ class TestBuildObjectPath:
             token=None,
             account="+491234567890",
             log_level="INFO",
+            buffer_size=0,
         )
         assert _build_object_path(config) == "/org/asamk/Signal/_491234567890"
 
@@ -49,6 +50,7 @@ class TestBuildObjectPath:
             token=None,
             account="+1-555-123-4567",
             log_level="INFO",
+            buffer_size=0,
         )
         assert _build_object_path(config) == "/org/asamk/Signal/_1-555-123-4567"
 
@@ -58,7 +60,7 @@ class TestGetBus:
 
     def test_system_bus(self):
         """Test system bus selection."""
-        config = Config(bus="system", host="localhost", port=8765, token=None, account=None, log_level="INFO")
+        config = Config(bus="system", host="localhost", port=8765, token=None, account=None, log_level="INFO", buffer_size=0)
 
         with patch("swb.dbus_client.dbus.SystemBus") as mock_system:
             with patch("swb.dbus_client.dbus.SessionBus") as mock_session:
@@ -68,7 +70,7 @@ class TestGetBus:
 
     def test_session_bus(self):
         """Test session bus selection."""
-        config = Config(bus="session", host="localhost", port=8765, token=None, account=None, log_level="INFO")
+        config = Config(bus="session", host="localhost", port=8765, token=None, account=None, log_level="INFO", buffer_size=0)
 
         with patch("swb.dbus_client.dbus.SystemBus") as mock_system:
             with patch("swb.dbus_client.dbus.SessionBus") as mock_session:
@@ -89,6 +91,7 @@ class TestConnectSignalInterface:
             token=None,
             account=None,
             log_level="INFO",
+            buffer_size=0,
         )
 
     @pytest.fixture

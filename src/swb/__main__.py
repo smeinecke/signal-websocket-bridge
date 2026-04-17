@@ -4,6 +4,7 @@ import asyncio
 import logging
 import threading
 import time
+from collections import deque
 from typing import Callable
 
 import dbus.exceptions
@@ -34,7 +35,7 @@ def _run_watchdog(get_bus, stop_event: threading.Event) -> None:
         if not is_connected():
             continue
         try:
-            # Probe via SignalControl.version() on the root path — version() only
+            # Probe via SignalControl.version() on the root path - version() only
             # exists on SignalControl, not on the per-account org.asamk.Signal interface.
             bus = get_bus()
             root = bus.get_object("org.asamk.Signal", "/org/asamk/Signal", introspect=False)
@@ -64,7 +65,10 @@ def main():
     connected_clients: set = set()
     clients_lock = threading.Lock()
 
-    signal_handler = create_signal_handler(connected_clients, clients_lock, loop)
+    event_buffer = deque(maxlen=config.buffer_size) if config.buffer_size > 0 else None
+    if event_buffer is not None:
+        logging.info(f"Event buffer enabled: up to {config.buffer_size} events will be replayed on client reconnect")
+    signal_handler = create_signal_handler(connected_clients, clients_lock, loop, event_buffer)
 
     backoff = 1
     while not connect_signal_interface(config, loop, signal_handler, connected_clients, clients_lock):
@@ -101,6 +105,7 @@ def main():
         asyncapi_yaml_func=get_asyncapi_spec,
         connected_clients=connected_clients,
         clients_lock=clients_lock,
+        event_buffer=event_buffer,
     )
 
     try:

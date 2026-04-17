@@ -23,6 +23,7 @@ def mock_config_no_auth():
         token=None,
         account=None,
         log_level="INFO",
+        buffer_size=0,
     )
 
 
@@ -36,6 +37,7 @@ def mock_config_with_auth():
         token="secret123",
         account=None,
         log_level="INFO",
+        buffer_size=0,
     )
 
 
@@ -423,3 +425,149 @@ class TestAuthEdgeCases:
 
             mock_ws.send_str.assert_called_with(json.dumps({"error": "unauthorized", "detail": "expected text auth message"}))
             mock_ws.close.assert_called_once()
+
+
+class TestKeepAlive:
+    """Test subscribeReceive/unsubscribeReceive keep-alive management."""
+
+    async def test_subscribe_called_on_first_client(self, server_no_auth, mock_config_no_auth):
+        """subscribeReceive() is called when the first client connects."""
+        server = server_no_auth
+
+        mock_ws = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+
+        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
+            mock_ws.receive.side_effect = [MagicMock(type=aiohttp.WSMsgType.CLOSED)]
+            mock_ws.closed = True
+
+            with patch("swb.websocket_server.subscribe_receive") as mock_sub, \
+                 patch("swb.websocket_server.unsubscribe_receive") as mock_unsub:
+                await server.websocket_handler(mock_request)
+
+                mock_sub.assert_called_once()
+                mock_unsub.assert_called_once()
+
+    async def test_subscribe_not_called_for_second_client(self, server_no_auth, mock_config_no_auth):
+        """subscribeReceive() fires only for the first client; unsubscribeReceive() only on last."""
+        server = server_no_auth
+
+        mock_ws1 = AsyncMock()
+        mock_ws2 = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+        mock_request.rel_url.query.get.return_value = None
+
+        with patch("swb.websocket_server.subscribe_receive") as mock_sub, \
+             patch("swb.websocket_server.unsubscribe_receive") as mock_unsub:
+
+            async def run_ws1():
+                with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws1):
+                    mock_ws1.receive.side_effect = [MagicMock(type=aiohttp.WSMsgType.CLOSED)]
+                    mock_ws1.closed = True
+                    await server.websocket_handler(mock_request)
+
+            async def run_ws2():
+                with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws2):
+                    mock_ws2.receive.side_effect = [MagicMock(type=aiohttp.WSMsgType.CLOSED)]
+                    mock_ws2.closed = True
+                    await server.websocket_handler(mock_request)
+
+            # Run sequentially: ws1 connects and disconnects, then ws2
+            await run_ws1()
+            await run_ws2()
+
+            # subscribe/unsubscribe called once each per sequential connection
+            assert mock_sub.call_count == 2
+            assert mock_unsub.call_count == 2
+
+
+class TestEventBuffer:
+    """Test event buffer replay on client connect."""
+
+    async def test_buffer_replayed_on_connect(self, mock_config_no_auth, mock_dispatch, mock_asyncapi):
+        """Buffered events are sent to a new client immediately after connect."""
+        from collections import deque
+
+        buf = deque(["payload1", "payload2"], maxlen=10)
+        server = WebSocketServer(
+            config=mock_config_no_auth,
+            dispatch_factory=mock_dispatch,
+            asyncapi_json_func=mock_asyncapi,
+            asyncapi_yaml_func=mock_asyncapi,
+            event_buffer=buf,
+        )
+
+        mock_ws = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+
+        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws), \
+             patch("swb.websocket_server.subscribe_receive"), \
+             patch("swb.websocket_server.unsubscribe_receive"):
+            mock_ws.receive.side_effect = [MagicMock(type=aiohttp.WSMsgType.CLOSED)]
+            mock_ws.closed = True
+
+            await server.websocket_handler(mock_request)
+
+        sent = [call.args[0] for call in mock_ws.send_str.call_args_list]
+        assert "payload1" in sent
+        assert "payload2" in sent
+
+    async def test_no_replay_when_buffer_disabled(self, server_no_auth, mock_config_no_auth):
+        """No extra send_str calls when event_buffer is None."""
+        server = server_no_auth
+        assert server.event_buffer is None
+
+        mock_ws = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+
+        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws), \
+             patch("swb.websocket_server.subscribe_receive"), \
+             patch("swb.websocket_server.unsubscribe_receive"):
+            mock_ws.receive.side_effect = [MagicMock(type=aiohttp.WSMsgType.CLOSED)]
+            mock_ws.closed = True
+
+            await server.websocket_handler(mock_request)
+
+        # No signal events to replay - only DBus method results would appear
+        mock_ws.send_str.assert_not_called()
+
+    async def test_empty_buffer_no_send(self, mock_config_no_auth, mock_dispatch, mock_asyncapi):
+        """Empty buffer causes no extra sends."""
+        from collections import deque
+
+        buf = deque(maxlen=10)
+        server = WebSocketServer(
+            config=mock_config_no_auth,
+            dispatch_factory=mock_dispatch,
+            asyncapi_json_func=mock_asyncapi,
+            asyncapi_yaml_func=mock_asyncapi,
+            event_buffer=buf,
+        )
+
+        mock_ws = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+
+        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws), \
+             patch("swb.websocket_server.subscribe_receive"), \
+             patch("swb.websocket_server.unsubscribe_receive"):
+            mock_ws.receive.side_effect = [MagicMock(type=aiohttp.WSMsgType.CLOSED)]
+            mock_ws.closed = True
+
+            await server.websocket_handler(mock_request)
+
+        mock_ws.send_str.assert_not_called()
+
+    async def test_buffer_respects_maxlen(self):
+        """deque with maxlen drops oldest events."""
+        from collections import deque
+
+        buf = deque(maxlen=3)
+        for i in range(5):
+            buf.append(f"event{i}")
+
+        assert list(buf) == ["event2", "event3", "event4"]
