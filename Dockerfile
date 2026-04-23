@@ -47,7 +47,7 @@ RUN set -eux; \
         test -n "$SIGNAL_CLI_VERSION"; \
         curl -fsSL "https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_CLI_VERSION}/signal-cli-${SIGNAL_CLI_VERSION}.tar.gz" -o /tmp/signal-cli.tar.gz; \
     fi; \
-    SIGNAL_CLI_DIR="$(tar -tzf /tmp/signal-cli.tar.gz | head -1 | cut -d/ -f1)"; \
+    SIGNAL_CLI_DIR="$(tar -tzf /tmp/signal-cli.tar.gz | grep -v '^\./\?$' | head -1 | cut -d/ -f1)"; \
     tar -xzf /tmp/signal-cli.tar.gz -C /opt; \
     mv "/opt/${SIGNAL_CLI_DIR}" /opt/signal-cli; \
     ln -sf /opt/signal-cli/bin/signal-cli /usr/bin/signal-cli; \
