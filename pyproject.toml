@@ -9,7 +9,7 @@ description = "signal-cli WebSocket bridge and bot toolkit"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "aiohttp>=3.11.0",
+    "aiohttp>=3.14.0",
     "pyyaml>=6.0.2",
     "websockets>=15.0.0",
     "defusedxml>=0.7.1",
