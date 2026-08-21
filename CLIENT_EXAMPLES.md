@@ -57,11 +57,13 @@ import websockets
 
 TOKEN = "your-secret-token"  # omit if no token configured
 
+
 async def call(ws, pending: dict, method: str, params: dict, req_id: int):
     """Send a JSON-RPC call and store it as pending so it can be retried on reconnect."""
     msg = {"id": req_id, "method": method, "params": params}
     pending[req_id] = msg
     await ws.send(json.dumps(msg))
+
 
 async def run():
     pending = {}  # id -> request, for retry after reconnect
@@ -72,9 +74,16 @@ async def run():
         assert json.loads(await ws.recv()) == {"auth": "ok"}
 
         # Send a message
-        await call(ws, pending, "sendMessage", {
-            "message": "Hi!", "recipients": ["+4915100000000"],
-        }, req_id=1)
+        await call(
+            ws,
+            pending,
+            "sendMessage",
+            {
+                "message": "Hi!",
+                "recipients": ["+4915100000000"],
+            },
+            req_id=1,
+        )
 
         async for raw in ws:
             event = json.loads(raw)
@@ -104,6 +113,7 @@ async def run():
             else:
                 pending.pop(req_id, None)  # success - no longer needs retry
                 print(f"Request {req_id} result: {event['result']}")
+
 
 asyncio.run(run())
 ```
@@ -176,6 +186,7 @@ import asyncio
 import json
 import websockets
 
+
 async def echo_bot():
     async with websockets.connect("ws://localhost:8765/ws") as ws:
         async for raw in ws:
@@ -195,6 +206,7 @@ async def echo_bot():
                 params = {"message": f"echo: {text}", "recipients": [sender]}
             await ws.send(json.dumps({"id": 0, "method": method, "params": params}))
 
+
 asyncio.run(echo_bot())
 ```
 
@@ -206,40 +218,25 @@ For simple synchronous calls without WebSocket overhead:
 import requests
 
 # Simple message send
-response = requests.post("http://localhost:8765/send", json={
-    "method": "sendMessage",
-    "params": {"message": "Hello!", "recipients": ["+4915100000000"]}
-})
+response = requests.post("http://localhost:8765/send", json={"method": "sendMessage", "params": {"message": "Hello!", "recipients": ["+4915100000000"]}})
 print(response.json())
 
 # List all groups
-response = requests.post("http://localhost:8765/send", json={
-    "method": "listGroups"
-})
+response = requests.post("http://localhost:8765/send", json={"method": "listGroups"})
 print(response.json())
 
 # Multi-account mode
-response = requests.post(
-    "http://localhost:8765/send?account=+4915100000000",
-    json={"method": "listGroups"}
-)
+response = requests.post("http://localhost:8765/send?account=+4915100000000", json={"method": "listGroups"})
 print(response.json())
 
 # With authentication (Authorization header)
-response = requests.post(
-    "http://localhost:8765/send",
-    headers={"Authorization": "Bearer your-secret-token"},
-    json={"method": "version"}
-)
+response = requests.post("http://localhost:8765/send", headers={"Authorization": "Bearer your-secret-token"}, json={"method": "version"})
 print(response.json())
 
 response = requests.post(
     "http://localhost:8765/send",
     headers={"Authorization": "Bearer your-secret-token"},
-    json={
-        "method": "sendMessage",
-        "params": {"message": "Hello!", "recipients": ["+4915100000000"]}
-    }
+    json={"method": "sendMessage", "params": {"message": "Hello!", "recipients": ["+4915100000000"]}},
 )
 print(response.json())
 ```
@@ -255,6 +252,7 @@ import websockets
 
 TOKEN = "your-secret-token"
 
+
 async def run():
     async with websockets.connect("ws://localhost:8765/ws") as ws:
         await ws.send(json.dumps({"auth": TOKEN}))
@@ -268,6 +266,7 @@ async def run():
                 account = event.get("account", "")
                 prefix = f"[{account}] " if account else ""
                 print(f"{prefix}{event['sender']}: {event['message']}")
+
 
 asyncio.run(run())
 ```
