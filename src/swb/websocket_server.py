@@ -1,6 +1,7 @@
 """HTTP and WebSocket server with AsyncAPI endpoints."""
 
 import asyncio
+import hmac
 import json
 import logging
 import threading
@@ -97,7 +98,8 @@ class WebSocketServer:
                     logging.warning(f"Auth failed from {peer}: invalid JSON")
                     return ws
 
-                if auth_data.get("auth") != self.config.token:
+                auth_value = auth_data.get("auth") if isinstance(auth_data, dict) else None
+                if not isinstance(auth_value, str) or not hmac.compare_digest(auth_value, self.config.token):
                     await ws.send_str(json.dumps({"error": "unauthorized"}))
                     await ws.close()
                     logging.warning(f"Auth failed from {peer}: invalid token")
@@ -137,12 +139,16 @@ class WebSocketServer:
                         await ws.send_str(json.dumps({"error": "invalid JSON"}))
                         continue
 
+                    if not isinstance(req, dict):
+                        await ws.send_str(json.dumps({"error": "expected JSON object"}))
+                        continue
+
                     req_id = req.get("id")
                     method = req.get("method", "")
                     params = req.get("params", {})
 
                     try:
-                        result = dispatch(method, params)
+                        result = await asyncio.to_thread(dispatch, method, params)
                         await ws.send_str(json.dumps({"id": req_id, "result": result}))
                     except DBusException as exc:
                         # Connection errors trigger a background reconnect. The client
@@ -181,18 +187,21 @@ class WebSocketServer:
         """
         peer = request.remote or "unknown"
 
-        # Parse request body first
+        # Token authentication (if configured)
+        if self.config.token:
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer ") or not hmac.compare_digest(auth_header[7:], self.config.token):
+                logging.warning(f"Auth failed from {peer}: invalid or missing token")
+                return web.json_response({"error": "unauthorized"}, status=401)
+
+        # Parse request body
         try:
             body = await request.json()
         except (json.JSONDecodeError, ValueError) as exc:
             return web.json_response({"error": "invalid JSON", "detail": str(exc)}, status=400)
 
-        # Token authentication (if configured)
-        if self.config.token:
-            auth_header = request.headers.get("Authorization", "")
-            if not auth_header.startswith("Bearer ") or auth_header[7:] != self.config.token:
-                logging.warning(f"Auth failed from {peer}: invalid or missing token")
-                return web.json_response({"error": "unauthorized"}, status=401)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "expected JSON object"}, status=400)
 
         account = request.rel_url.query.get("account") or None
         dispatch = self.dispatch_factory(account)
@@ -207,7 +216,7 @@ class WebSocketServer:
             return web.json_response({"error": "missing method"}, status=400)
 
         try:
-            result = dispatch(method, params)
+            result = await asyncio.to_thread(dispatch, method, params)
             return web.json_response({"id": req_id, "result": result})
         except DBusException as exc:
             return web.json_response({"id": req_id, "error": str(exc)}, status=500)

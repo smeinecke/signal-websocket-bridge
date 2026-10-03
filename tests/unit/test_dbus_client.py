@@ -189,6 +189,41 @@ class TestIsConnected:
         assert is_connected() == _dbus_connected
 
 
+class TestProbe:
+    """Test liveness probe interface selection per account mode."""
+
+    def _run_probe(self, single_account_mode: bool) -> MagicMock:
+        import swb.dbus_client as dc
+
+        mock_bus = MagicMock()
+        mock_obj = MagicMock()
+        mock_iface = MagicMock()
+        mock_bus.get_object.return_value = mock_obj
+
+        original = dc._single_account_mode
+        dc._single_account_mode = single_account_mode
+        try:
+            with patch("swb.dbus_client.get_bus_instance", return_value=mock_bus):
+                with patch("swb.dbus_client.dbus.Interface", return_value=mock_iface) as mock_iface_cls:
+                    dc.probe()
+        finally:
+            dc._single_account_mode = original
+
+        return mock_iface_cls
+
+    def test_probe_single_account_uses_signal_interface(self):
+        """Single-account mode: version() is on org.asamk.Signal."""
+        mock_iface_cls = self._run_probe(single_account_mode=True)
+        iface_name = mock_iface_cls.call_args.args[1]
+        assert iface_name == "org.asamk.Signal"
+
+    def test_probe_multi_account_uses_signal_control(self):
+        """Multi-account mode: version() is on org.asamk.SignalControl."""
+        mock_iface_cls = self._run_probe(single_account_mode=False)
+        iface_name = mock_iface_cls.call_args.args[1]
+        assert iface_name == "org.asamk.SignalControl"
+
+
 class TestSetupGlibLoop:
     """Test GLib loop setup."""
 

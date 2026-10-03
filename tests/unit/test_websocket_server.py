@@ -172,6 +172,28 @@ class TestWebsocketHandlerNoAuth:
             calls = [c for c in mock_ws.send_str.call_args_list]
             assert len(calls) > 0
 
+    async def test_websocket_non_object_json(self, server_no_auth, mock_config_no_auth, mock_dispatch):
+        """Valid JSON that isn't an object returns an error without killing the connection."""
+        server = server_no_auth
+
+        mock_ws = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+
+        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
+            mock_ws.receive.side_effect = [
+                MagicMock(type=aiohttp.WSMsgType.TEXT, data="[1, 2, 3]"),
+                MagicMock(type=aiohttp.WSMsgType.TEXT, data=json.dumps({"id": 1, "method": "version", "params": {}})),
+                MagicMock(type=aiohttp.WSMsgType.CLOSED),
+            ]
+            mock_ws.closed = True
+
+            await server.websocket_handler(mock_request)
+
+            mock_ws.send_str.assert_any_call(json.dumps({"error": "expected JSON object"}))
+            # Connection stays alive - the following valid message is still dispatched
+            mock_dispatch.dispatch_mock.assert_called_once_with("version", {})
+
 
 class TestWebsocketHandlerWithAuth:
     """Test WebSocket handler with authentication."""
@@ -425,6 +447,62 @@ class TestAuthEdgeCases:
 
             mock_ws.send_str.assert_called_with(json.dumps({"error": "unauthorized", "detail": "expected text auth message"}))
             mock_ws.close.assert_called_once()
+
+    async def test_websocket_auth_non_object_json(self, server_with_auth, mock_config_with_auth):
+        """Auth message that is valid JSON but not an object is rejected without a crash."""
+        server = server_with_auth
+
+        mock_ws = AsyncMock()
+        mock_request = MagicMock()
+        mock_request.remote = "127.0.0.1"
+
+        with patch("aiohttp.web.WebSocketResponse", return_value=mock_ws):
+            mock_ws.receive.return_value = MagicMock(type=aiohttp.WSMsgType.TEXT, data='"just-a-string"')
+
+            await server.websocket_handler(mock_request)
+
+            mock_ws.send_str.assert_called_with(json.dumps({"error": "unauthorized"}))
+            mock_ws.close.assert_called_once()
+
+
+class TestSendHandler:
+    """Test POST /send endpoint."""
+
+    async def test_send_non_object_body(self, server_no_auth):
+        """JSON body that isn't an object returns 400, not a 500."""
+        request = MagicMock()
+        request.remote = "127.0.0.1"
+        request.json = AsyncMock(return_value=[1, 2, 3])
+        request.rel_url.query.get.return_value = None
+
+        response = await server_no_auth.send_handler(request)
+
+        assert response.status == 400
+
+    async def test_send_auth_checked_before_body(self, server_with_auth):
+        """Auth failure returns 401 even when the body would fail to parse."""
+        request = MagicMock()
+        request.remote = "127.0.0.1"
+        request.headers = {}
+        request.json = AsyncMock(side_effect=json.JSONDecodeError("bad", "", 0))
+
+        response = await server_with_auth.send_handler(request)
+
+        assert response.status == 401
+        request.json.assert_not_called()
+
+    async def test_send_dispatch_success(self, server_no_auth, mock_dispatch):
+        """Valid request is dispatched and returns 200."""
+        request = MagicMock()
+        request.remote = "127.0.0.1"
+        request.json = AsyncMock(return_value={"id": 1, "method": "version", "params": {}})
+        request.rel_url.query.get.return_value = None
+        mock_dispatch.dispatch_mock.return_value = {"version": "0.12.0"}
+
+        response = await server_no_auth.send_handler(request)
+
+        assert response.status == 200
+        mock_dispatch.dispatch_mock.assert_called_once_with("version", {})
 
 
 class TestKeepAlive:

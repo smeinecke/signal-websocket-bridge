@@ -13,11 +13,11 @@ import asyncio
 import json
 import subprocess
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
+import aiohttp
 import pytest
-from websockets.client import connect
-from websockets.legacy.client import WebSocketClientProtocol
 
 # Constants
 CONTAINER_NAME = "swb-integration-test"
@@ -25,6 +25,20 @@ WEBSOCKET_PORT = 9876
 HEALTH_URL = f"http://localhost:{WEBSOCKET_PORT}/health"
 WS_URL = f"ws://localhost:{WEBSOCKET_PORT}/ws"
 TEST_TOKEN = "test-secret-token-12345"
+
+
+@asynccontextmanager
+async def ws_connect(url: str, timeout: float = 5):
+    """Open an aiohttp WebSocket client connection."""
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+        async with session.ws_connect(url) as ws:
+            yield ws
+
+
+async def ws_recv_json(ws, timeout: float = 5) -> dict:
+    """Receive one text frame and decode it as JSON."""
+    msg = await asyncio.wait_for(ws.receive(), timeout=timeout)
+    return json.loads(msg.data)
 
 
 @pytest.fixture(scope="module")
@@ -223,14 +237,12 @@ class TestSignalCliIntegration:
 
         for i in range(max_retries):
             try:
-                async with connect(WS_URL, open_timeout=5) as ws:
+                async with ws_connect(WS_URL) as ws:
                     # Authenticate first
-                    auth_request = {"auth": TEST_TOKEN}
-                    await ws.send(json.dumps(auth_request))
+                    await ws.send_str(json.dumps({"auth": TEST_TOKEN}))
 
                     # Wait for auth response
-                    auth_response_raw = await asyncio.wait_for(ws.recv(), timeout=5)
-                    auth_response = json.loads(auth_response_raw)
+                    auth_response = await ws_recv_json(ws)
 
                     # Verify auth success
                     assert auth_response.get("auth") == "ok", f"Auth failed: {auth_response}"
@@ -250,29 +262,27 @@ class TestSignalCliIntegration:
 
         for i in range(max_retries):
             try:
-                async with connect(WS_URL, open_timeout=5) as ws:
+                async with ws_connect(WS_URL) as ws:
                     # Step 1: Send authentication
-                    auth_request = {"auth": TEST_TOKEN}
-                    await ws.send(json.dumps(auth_request))
+                    await ws.send_str(json.dumps({"auth": TEST_TOKEN}))
 
                     # Step 2: Wait for auth response
-                    auth_response_raw = await asyncio.wait_for(ws.recv(), timeout=5)
-                    auth_response = json.loads(auth_response_raw)
+                    auth_response = await ws_recv_json(ws)
 
                     # Verify auth success
                     assert auth_response.get("auth") == "ok", f"Auth failed: {auth_response}"
 
                     # Step 3: Send version request
-                    version_request = {
-                        "id": 1,
-                        "method": "version",
-                        "params": {},
-                    }
-                    await ws.send(json.dumps(version_request))
+                    await ws.send_str(
+                        json.dumps({
+                            "id": 1,
+                            "method": "version",
+                            "params": {},
+                        })
+                    )
 
                     # Step 4: Wait for version response
-                    response_raw = await asyncio.wait_for(ws.recv(), timeout=5)
-                    response = json.loads(response_raw)
+                    response = await ws_recv_json(ws)
 
                     # Verify response structure
                     assert "id" in response
@@ -298,14 +308,12 @@ class TestSignalCliIntegration:
     @pytest.mark.asyncio
     async def test_websocket_auth_failure(self, docker_container):
         """Test WebSocket connection with invalid token is rejected."""
-        async with connect(WS_URL, open_timeout=5) as ws:
+        async with ws_connect(WS_URL) as ws:
             # Send invalid auth
-            auth_request = {"auth": "invalid-token"}
-            await ws.send(json.dumps(auth_request))
+            await ws.send_str(json.dumps({"auth": "invalid-token"}))
 
             # Wait for error response
-            response_raw = await asyncio.wait_for(ws.recv(), timeout=5)
-            response = json.loads(response_raw)
+            response = await ws_recv_json(ws)
 
             # Verify auth failure
             assert "error" in response
@@ -320,13 +328,13 @@ class TestSignalCliIntegration:
         error - but it must never be an UnknownObject DBus error, which would
         indicate the bridge's _signal_interface points to a non-existent path.
         """
-        async with connect(WS_URL, open_timeout=5) as ws:
-            await ws.send(json.dumps({"auth": TEST_TOKEN}))
-            auth = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+        async with ws_connect(WS_URL) as ws:
+            await ws.send_str(json.dumps({"auth": TEST_TOKEN}))
+            auth = await ws_recv_json(ws)
             assert auth.get("auth") == "ok", f"Auth failed: {auth}"
 
-            await ws.send(json.dumps({"id": 2, "method": "listGroups", "params": {}}))
-            response = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+            await ws.send_str(json.dumps({"id": 2, "method": "listGroups", "params": {}}))
+            response = await ws_recv_json(ws, timeout=10)
 
         assert response.get("id") == 2
         error = response.get("error", "")

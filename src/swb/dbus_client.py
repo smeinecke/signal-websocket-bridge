@@ -22,6 +22,7 @@ _reconnect_backoff = 1  # seconds, doubles up to 60s cap
 _dbus_connected = False
 _reconnect_thread: threading.Thread | None = None
 _initial_connect = True  # distinguishes first connect from reconnect
+_single_account_mode = False  # set at connect time; drives probe() interface choice
 
 # Stored at connect time so the reconnect thread can use them
 _config: Config | None = None
@@ -89,7 +90,7 @@ def connect_signal_interface(
 ) -> bool:
     """Connect to signal-cli DBus interface. Returns True on success."""
     global _bus, _signal_object, _signal_interface, _dbus_connected, _reconnect_backoff
-    global _loop, _signal_handler, _connected_clients, _clients_lock, _config, _initial_connect
+    global _loop, _signal_handler, _connected_clients, _clients_lock, _config, _initial_connect, _single_account_mode
 
     _config = config
     _loop = loop
@@ -145,6 +146,7 @@ def connect_signal_interface(
             _signal_object = _bus.get_object("org.asamk.Signal", object_path, introspect=False)
             _signal_interface = dbus.Interface(_signal_object, "org.asamk.Signal")
 
+            _single_account_mode = single_account_mode
             _dbus_connected = True
             _reconnect_backoff = 1
             logging.info(f"Connected to signal-cli at {object_path}")
@@ -200,6 +202,14 @@ def _reconnect_loop():
             break
 
 
+def _log_send_error(future) -> None:
+    """Done-callback for run_coroutine_threadsafe - logs failed sends at DEBUG level."""
+    try:
+        future.result()
+    except Exception as exc:
+        logging.debug(f"Failed to broadcast to client: {exc}")
+
+
 def _broadcast_to_clients(payload: dict) -> None:
     """Broadcast a system message to all connected WebSocket clients."""
     if not _connected_clients or not _clients_lock:
@@ -213,10 +223,9 @@ def _broadcast_to_clients(payload: dict) -> None:
 
     for ws in clients_snapshot:
         try:
-            if hasattr(ws, "send_str"):
-                asyncio.run_coroutine_threadsafe(ws.send_str(msg), _loop)
-            else:
-                asyncio.run_coroutine_threadsafe(ws.send(msg), _loop)
+            coro = ws.send_str(msg) if hasattr(ws, "send_str") else ws.send(msg)
+            future = asyncio.run_coroutine_threadsafe(coro, _loop)
+            future.add_done_callback(_log_send_error)
         except Exception:
             logging.debug("Failed to broadcast to client (disconnected?)", exc_info=True)
 
@@ -281,6 +290,18 @@ def unsubscribe_receive() -> None:
 def is_connected() -> bool:
     """Check if DBus connection is active."""
     return _dbus_connected
+
+
+def probe() -> None:
+    """Liveness probe against signal-cli. Raises DBusException on failure.
+
+    version() lives on SignalControl in multi-account mode; in single-account
+    mode the root object implements org.asamk.Signal directly.
+    """
+    bus = get_bus_instance()
+    root = bus.get_object("org.asamk.Signal", "/org/asamk/Signal", introspect=False)
+    iface_name = "org.asamk.Signal" if _single_account_mode else "org.asamk.SignalControl"
+    dbus.Interface(root, iface_name).version()  # type: ignore[attr-defined]
 
 
 def get_interface() -> dbus.Interface:

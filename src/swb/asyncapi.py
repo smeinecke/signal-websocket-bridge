@@ -109,7 +109,9 @@ def _extract_interface_data(root) -> dict[str, Any]:
     fallback = "org.asamk.SignalControl"
 
     interfaces = {iface.get("name"): iface for iface in root.findall(".//interface")}
-    target = interfaces.get(preferred) or interfaces.get(fallback)
+    target = interfaces.get(preferred)
+    if target is None or len(target) == 0:
+        target = interfaces.get(fallback)
     if target is None:
         return registry
 
