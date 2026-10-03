@@ -1,9 +1,14 @@
-"""Method dispatching from WebSocket JSON-RPC to DBus calls."""
+"""Method dispatching from WebSocket JSON-RPC to DBus calls.
 
+Each handler invokes `BoundInterface.call(member, signature, body)` with the
+method's DBus input signature. Signatures are explicit rather than
+introspection-derived because signal-cli dispatches methods on interfaces
+that are not always declared in introspection data.
+"""
+
+import asyncio
 from enum import Enum
-from typing import Callable
-
-import dbus
+from typing import Any, Callable
 
 from swb.types import (
     dbus_to_native,
@@ -13,6 +18,10 @@ from swb.types import (
     to_string_array,
     validate_attachments,
 )
+
+# DBus calls against signal-cli should never take this long; a timeout
+# means the service is hung, which is treated as a lost connection.
+CALL_TIMEOUT = 30.0
 
 
 class Method(Enum):
@@ -85,18 +94,20 @@ class Method(Enum):
 class MethodDispatcher:
     """Dispatches JSON-RPC method calls to signal-cli DBus interface.
 
-    Uses callable getters for the interface and bus so that reconnections
-    are transparent - stale references are never held across a disconnect.
+    Resolves the interface through the client on every call so
+    reconnections are transparent - stale references are never held
+    across a disconnect.
     """
 
-    def __init__(self, get_interface, get_bus):
+    def __init__(self, client, account: str | None = None):
         """
         Args:
-            get_interface: zero-argument callable returning the current dbus.Interface
-            get_bus:       zero-argument callable returning the current dbus.Bus
+            client:  SignalClient providing bus access and interface resolution
+            account: account number this dispatcher is bound to (or None for default)
         """
-        self._get_interface = get_interface
-        self._get_bus = get_bus
+        self._client = client
+        self._account = account
+        self._iface: Any = None
         self._handlers: dict[Method, Callable] = {
             # Messaging
             Method.SEND_MESSAGE: self._send_message,
@@ -156,14 +167,13 @@ class MethodDispatcher:
         }
 
     @property
-    def signal_interface(self):
-        return self._get_interface()
+    def signal_interface(self) -> Any:
+        """The current bound interface; only valid inside dispatch()."""
+        if self._iface is None:
+            raise RuntimeError("dispatch() has not resolved an interface")
+        return self._iface
 
-    @property
-    def bus(self):
-        return self._get_bus()
-
-    def dispatch(self, method_name: str, params: dict):
+    async def dispatch(self, method_name: str, params: dict):
         """Dispatch JSON-RPC method call to appropriate handler."""
         try:
             method = Method(method_name)
@@ -174,252 +184,242 @@ class MethodDispatcher:
         if not handler:
             raise ValueError(f"no handler for method '{method_name}'")
 
-        return handler(params)
+        try:
+            self._iface = self._client.interface(self._account)
+            return await asyncio.wait_for(handler(params), timeout=CALL_TIMEOUT)
+        except Exception as exc:
+            self._client.note_error(exc)
+            raise
 
     # -------------------------------------------------------------------------
     # Messaging handlers
     # -------------------------------------------------------------------------
 
-    def _send_message(self, params: dict) -> dict:
+    async def _send_message(self, params: dict) -> dict:
         attachments = params.get("attachments", [])
         validate_attachments(attachments)
-        ts = self.signal_interface.sendMessage(
-            params["message"],
-            to_string_array(attachments),
-            params["recipients"],
-        )
+        ts = await self.signal_interface.call("sendMessage", "sasas", [params["message"], to_string_array(attachments), params["recipients"]])
         return {"timestamp": int(ts)}
 
-    def _send_note_to_self(self, params: dict) -> dict:
+    async def _send_note_to_self(self, params: dict) -> dict:
         attachments = params.get("attachments", [])
         validate_attachments(attachments)
-        ts = self.signal_interface.sendNoteToSelfMessage(params["message"], to_string_array(attachments))
+        ts = await self.signal_interface.call("sendNoteToSelfMessage", "sas", [params["message"], to_string_array(attachments)])
         return {"timestamp": int(ts)}
 
-    def _send_message_reaction(self, params: dict) -> dict:
-        ts = self.signal_interface.sendMessageReaction(
-            params["emoji"],
-            bool(params["remove"]),
-            params["targetAuthor"],
-            to_int64(params["targetSentTimestamp"]),
-            params["recipients"],
-        )
-        return {"timestamp": int(ts)}
-
-    def _send_read_receipt(self, params: dict) -> None:
-        self.signal_interface.sendReadReceipt(
-            params["recipient"],
-            to_int64_array(params["targetSentTimestamps"]),
-        )
-        return None
-
-    def _send_viewed_receipt(self, params: dict) -> None:
-        self.signal_interface.sendViewedReceipt(
-            params["recipient"],
-            to_int64_array(params["targetSentTimestamps"]),
-        )
-        return None
-
-    def _send_typing(self, params: dict) -> None:
-        self.signal_interface.sendTyping(params["recipient"], bool(params.get("stop", False)))
-        return None
-
-    def _send_remote_delete(self, params: dict) -> dict:
-        ts = self.signal_interface.sendRemoteDeleteMessage(
-            to_int64(params["targetSentTimestamp"]),
-            params["recipients"],
+    async def _send_message_reaction(self, params: dict) -> dict:
+        ts = await self.signal_interface.call(
+            "sendMessageReaction",
+            "sbsxas",
+            [
+                params["emoji"],
+                bool(params["remove"]),
+                params["targetAuthor"],
+                to_int64(params["targetSentTimestamp"]),
+                params["recipients"],
+            ],
         )
         return {"timestamp": int(ts)}
 
-    def _send_end_session(self, params: dict) -> None:
-        self.signal_interface.sendEndSessionMessage(params["recipients"])
+    async def _send_read_receipt(self, params: dict) -> None:
+        await self.signal_interface.call("sendReadReceipt", "sax", [params["recipient"], to_int64_array(params["targetSentTimestamps"])])
         return None
 
-    def _send_payment_notification(self, params: dict) -> dict:
-        ts = self.signal_interface.sendPaymentNotification(
-            to_bytes(params["receipt"]),
-            params["note"],
-            params["recipient"],
-        )
+    async def _send_viewed_receipt(self, params: dict) -> None:
+        await self.signal_interface.call("sendViewedReceipt", "sax", [params["recipient"], to_int64_array(params["targetSentTimestamps"])])
+        return None
+
+    async def _send_typing(self, params: dict) -> None:
+        await self.signal_interface.call("sendTyping", "sb", [params["recipient"], bool(params.get("stop", False))])
+        return None
+
+    async def _send_remote_delete(self, params: dict) -> dict:
+        ts = await self.signal_interface.call("sendRemoteDeleteMessage", "xas", [to_int64(params["targetSentTimestamp"]), params["recipients"]])
+        return {"timestamp": int(ts)}
+
+    async def _send_end_session(self, params: dict) -> None:
+        await self.signal_interface.call("sendEndSessionMessage", "as", [params["recipients"]])
+        return None
+
+    async def _send_payment_notification(self, params: dict) -> dict:
+        ts = await self.signal_interface.call("sendPaymentNotification", "ayss", [to_bytes(params["receipt"]), params["note"], params["recipient"]])
         return {"timestamp": int(ts)}
 
     # -------------------------------------------------------------------------
     # Groups (main interface) handlers
     # -------------------------------------------------------------------------
 
-    def _send_group_message(self, params: dict) -> dict:
+    async def _send_group_message(self, params: dict) -> dict:
         attachments = params.get("attachments", [])
         validate_attachments(attachments)
-        ts = self.signal_interface.sendGroupMessage(
-            params["message"],
-            to_string_array(attachments),
-            to_bytes(params["groupId"]),
+        ts = await self.signal_interface.call("sendGroupMessage", "sasay", [params["message"], to_string_array(attachments), to_bytes(params["groupId"])])
+        return {"timestamp": int(ts)}
+
+    async def _send_group_message_reaction(self, params: dict) -> dict:
+        ts = await self.signal_interface.call(
+            "sendGroupMessageReaction",
+            "sbsxay",
+            [
+                params["emoji"],
+                bool(params["remove"]),
+                params["targetAuthor"],
+                to_int64(params["targetSentTimestamp"]),
+                to_bytes(params["groupId"]),
+            ],
         )
         return {"timestamp": int(ts)}
 
-    def _send_group_message_reaction(self, params: dict) -> dict:
-        ts = self.signal_interface.sendGroupMessageReaction(
-            params["emoji"],
-            bool(params["remove"]),
-            params["targetAuthor"],
-            to_int64(params["targetSentTimestamp"]),
-            to_bytes(params["groupId"]),
-        )
+    async def _send_group_remote_delete(self, params: dict) -> dict:
+        ts = await self.signal_interface.call("sendGroupRemoteDeleteMessage", "xay", [to_int64(params["targetSentTimestamp"]), to_bytes(params["groupId"])])
         return {"timestamp": int(ts)}
 
-    def _send_group_remote_delete(self, params: dict) -> dict:
-        ts = self.signal_interface.sendGroupRemoteDeleteMessage(
-            to_int64(params["targetSentTimestamp"]),
-            to_bytes(params["groupId"]),
-        )
-        return {"timestamp": int(ts)}
-
-    def _send_group_typing(self, params: dict) -> None:
-        self.signal_interface.sendGroupTyping(
-            to_bytes(params["groupId"]),
-            bool(params.get("stop", False)),
-        )
+    async def _send_group_typing(self, params: dict) -> None:
+        await self.signal_interface.call("sendGroupTyping", "ayb", [to_bytes(params["groupId"]), bool(params.get("stop", False))])
         return None
 
-    def _create_group(self, params: dict) -> dict:
-        group_id = self.signal_interface.createGroup(
-            params["groupName"],
-            params.get("members", []),
-            params.get("avatar", ""),
-        )
+    async def _create_group(self, params: dict) -> dict:
+        group_id = await self.signal_interface.call("createGroup", "sass", [params["groupName"], params.get("members", []), params.get("avatar", "")])
         return {"groupId": dbus_to_native(group_id)}
 
-    def _list_groups(self, params: dict) -> list:
-        groups = self.signal_interface.listGroups()
+    async def _list_groups(self, params: dict) -> list:
+        groups = await self.signal_interface.call("listGroups", "", [])
         return [{"objectPath": str(g[0]), "groupId": dbus_to_native(g[1]), "name": str(g[2])} for g in groups]
 
-    def _get_group_members(self, params: dict) -> list:
-        members = self.signal_interface.getGroupMembers(to_bytes(params["groupId"]))
+    async def _get_group_members(self, params: dict) -> list:
+        members = await self.signal_interface.call("getGroupMembers", "ay", [to_bytes(params["groupId"])])
         return list(members)
 
-    def _join_group(self, params: dict) -> None:
-        self.signal_interface.joinGroup(params["inviteURI"])
+    async def _join_group(self, params: dict) -> None:
+        await self.signal_interface.call("joinGroup", "s", [params["inviteURI"]])
         return None
 
     # -------------------------------------------------------------------------
     # Group sub-interface handlers
     # -------------------------------------------------------------------------
 
-    def _get_group_interface(self, group_id: str):
+    async def _get_group_interface(self, group_id: str):
         """Get the org.asamk.Signal.Group interface for a groupId."""
-        group_id_bytes = to_bytes(group_id)
-        group_object_path = self.signal_interface.getGroup(group_id_bytes)
-        group_obj = self.bus.get_object("org.asamk.Signal", group_object_path)
-        return dbus.Interface(group_obj, "org.asamk.Signal.Group")
+        group_object_path = await self.signal_interface.call("getGroup", "ay", [to_bytes(group_id)])
+        return self._client.sub_interface(str(group_object_path), "org.asamk.Signal.Group")
 
-    def _quit_group(self, params: dict) -> None:
-        group_iface = self._get_group_interface(params["groupId"])
-        group_iface.quitGroup()
+    async def _quit_group(self, params: dict) -> None:
+        group_iface = await self._get_group_interface(params["groupId"])
+        await group_iface.call("quitGroup", "", [])
         return None
 
-    def _add_group_members(self, params: dict) -> None:
-        group_iface = self._get_group_interface(params["groupId"])
-        group_iface.addMembers(params["recipients"])
+    async def _add_group_members(self, params: dict) -> None:
+        group_iface = await self._get_group_interface(params["groupId"])
+        await group_iface.call("addMembers", "as", [params["recipients"]])
         return None
 
-    def _remove_group_members(self, params: dict) -> None:
-        group_iface = self._get_group_interface(params["groupId"])
-        group_iface.removeMembers(params["recipients"])
+    async def _remove_group_members(self, params: dict) -> None:
+        group_iface = await self._get_group_interface(params["groupId"])
+        await group_iface.call("removeMembers", "as", [params["recipients"]])
         return None
 
-    def _add_group_admins(self, params: dict) -> None:
-        group_iface = self._get_group_interface(params["groupId"])
-        group_iface.addAdmins(params["recipients"])
+    async def _add_group_admins(self, params: dict) -> None:
+        group_iface = await self._get_group_interface(params["groupId"])
+        await group_iface.call("addAdmins", "as", [params["recipients"]])
         return None
 
-    def _remove_group_admins(self, params: dict) -> None:
-        group_iface = self._get_group_interface(params["groupId"])
-        group_iface.removeAdmins(params["recipients"])
+    async def _remove_group_admins(self, params: dict) -> None:
+        group_iface = await self._get_group_interface(params["groupId"])
+        await group_iface.call("removeAdmins", "as", [params["recipients"]])
         return None
 
-    def _enable_group_link(self, params: dict) -> None:
-        group_iface = self._get_group_interface(params["groupId"])
-        group_iface.enableLink(bool(params["requiresApproval"]))
+    async def _enable_group_link(self, params: dict) -> None:
+        group_iface = await self._get_group_interface(params["groupId"])
+        await group_iface.call("enableLink", "b", [bool(params["requiresApproval"])])
         return None
 
-    def _disable_group_link(self, params: dict) -> None:
-        group_iface = self._get_group_interface(params["groupId"])
-        group_iface.disableLink()
+    async def _disable_group_link(self, params: dict) -> None:
+        group_iface = await self._get_group_interface(params["groupId"])
+        await group_iface.call("disableLink", "", [])
         return None
 
-    def _reset_group_link(self, params: dict) -> None:
-        group_iface = self._get_group_interface(params["groupId"])
-        group_iface.resetLink()
+    async def _reset_group_link(self, params: dict) -> None:
+        group_iface = await self._get_group_interface(params["groupId"])
+        await group_iface.call("resetLink", "", [])
         return None
 
     # -------------------------------------------------------------------------
     # Contacts handlers
     # -------------------------------------------------------------------------
 
-    def _get_self_number(self, params: dict) -> dict:
-        return {"number": str(self.signal_interface.getSelfNumber())}
+    async def _get_self_number(self, params: dict) -> dict:
+        return {"number": str(await self.signal_interface.call("getSelfNumber", "", []))}
 
-    def _get_contact_name(self, params: dict) -> dict:
-        return {"name": str(self.signal_interface.getContactName(params["number"]))}
+    async def _get_contact_name(self, params: dict) -> dict:
+        return {"name": str(await self.signal_interface.call("getContactName", "s", [params["number"]]))}
 
-    def _get_contact_number(self, params: dict) -> dict:
-        return {"numbers": list(self.signal_interface.getContactNumber(params["name"]))}
+    async def _get_contact_number(self, params: dict) -> dict:
+        return {"numbers": list(await self.signal_interface.call("getContactNumber", "s", [params["name"]]))}
 
-    def _set_contact_name(self, params: dict) -> None:
-        self.signal_interface.setContactName(params["number"], params["name"])
+    async def _set_contact_name(self, params: dict) -> None:
+        await self.signal_interface.call("setContactName", "ss", [params["number"], params["name"]])
         return None
 
-    def _is_contact_blocked(self, params: dict) -> dict:
-        return {"blocked": bool(self.signal_interface.isContactBlocked(params["number"]))}
+    async def _is_contact_blocked(self, params: dict) -> dict:
+        return {"blocked": bool(await self.signal_interface.call("isContactBlocked", "s", [params["number"]]))}
 
-    def _set_contact_blocked(self, params: dict) -> None:
-        self.signal_interface.setContactBlocked(params["number"], bool(params["block"]))
+    async def _set_contact_blocked(self, params: dict) -> None:
+        await self.signal_interface.call("setContactBlocked", "sb", [params["number"], bool(params["block"])])
         return None
 
-    def _delete_contact(self, params: dict) -> None:
-        self.signal_interface.deleteContact(params["number"])
+    async def _delete_contact(self, params: dict) -> None:
+        await self.signal_interface.call("deleteContact", "s", [params["number"]])
         return None
 
-    def _delete_recipient(self, params: dict) -> None:
-        self.signal_interface.deleteRecipient(params["number"])
+    async def _delete_recipient(self, params: dict) -> None:
+        await self.signal_interface.call("deleteRecipient", "s", [params["number"]])
         return None
 
-    def _is_registered(self, params: dict) -> dict:
+    async def _is_registered(self, params: dict) -> dict:
         if "numbers" in params:
-            results = self.signal_interface.isRegistered(params["numbers"])
+            results = await self.signal_interface.call("isRegistered", "as", [params["numbers"]])
             return {"results": [bool(r) for r in results]}
         if "number" in params:
-            return {"result": bool(self.signal_interface.isRegistered(params["number"]))}
-        return {"result": bool(self.signal_interface.isRegistered())}
+            return {"result": bool(await self.signal_interface.call("isRegistered", "s", [params["number"]]))}
+        return {"result": bool(await self.signal_interface.call("isRegistered", "", []))}
 
-    def _list_numbers(self, params: dict) -> dict:
-        return {"numbers": list(self.signal_interface.listNumbers())}
+    async def _list_numbers(self, params: dict) -> dict:
+        return {"numbers": list(await self.signal_interface.call("listNumbers", "", []))}
 
-    def _set_expiration_timer(self, params: dict) -> None:
-        self.signal_interface.setExpirationTimer(params["number"], dbus.Int32(int(params["expiration"])))
+    async def _set_expiration_timer(self, params: dict) -> None:
+        await self.signal_interface.call("setExpirationTimer", "si", [params["number"], int(params["expiration"])])
         return None
 
     # -------------------------------------------------------------------------
     # Profile handlers
     # -------------------------------------------------------------------------
 
-    def _update_profile(self, params: dict) -> None:
+    async def _update_profile(self, params: dict) -> None:
+        # updateProfile is overloaded in signal-cli: a 5-arg "name" form and a
+        # 6-arg "givenName" form; pick the variant matching the params.
         if "givenName" in params:
-            self.signal_interface.updateProfile(
-                params["givenName"],
-                params.get("familyName", ""),
-                params.get("about", ""),
-                params.get("aboutEmoji", ""),
-                params.get("avatar", ""),
-                bool(params.get("remove", False)),
+            await self.signal_interface.call(
+                "updateProfile",
+                "sssssb",
+                [
+                    params["givenName"],
+                    params.get("familyName", ""),
+                    params.get("about", ""),
+                    params.get("aboutEmoji", ""),
+                    params.get("avatar", ""),
+                    bool(params.get("remove", False)),
+                ],
             )
         else:
-            self.signal_interface.updateProfile(
-                params["name"],
-                params.get("about", ""),
-                params.get("aboutEmoji", ""),
-                params.get("avatar", ""),
-                bool(params.get("remove", False)),
+            await self.signal_interface.call(
+                "updateProfile",
+                "ssssb",
+                [
+                    params["name"],
+                    params.get("about", ""),
+                    params.get("aboutEmoji", ""),
+                    params.get("avatar", ""),
+                    bool(params.get("remove", False)),
+                ],
             )
         return None
 
@@ -427,57 +427,56 @@ class MethodDispatcher:
     # Devices handlers
     # -------------------------------------------------------------------------
 
-    def _add_device(self, params: dict) -> None:
-        self.signal_interface.addDevice(params["deviceUri"])
+    async def _add_device(self, params: dict) -> None:
+        await self.signal_interface.call("addDevice", "s", [params["deviceUri"]])
         return None
 
-    def _list_devices(self, params: dict) -> list:
-        devices = self.signal_interface.listDevices()
+    async def _list_devices(self, params: dict) -> list:
+        devices = await self.signal_interface.call("listDevices", "", [])
         return [{"objectPath": str(d[0]), "id": int(d[1]), "name": str(d[2])} for d in devices]
 
-    def _send_contacts(self, params: dict) -> None:
-        self.signal_interface.sendContacts()
+    async def _send_contacts(self, params: dict) -> None:
+        await self.signal_interface.call("sendContacts", "", [])
         return None
 
-    def _send_sync_request(self, params: dict) -> None:
-        self.signal_interface.sendSyncRequest()
+    async def _send_sync_request(self, params: dict) -> None:
+        await self.signal_interface.call("sendSyncRequest", "", [])
         return None
 
     # -------------------------------------------------------------------------
     # Misc handlers
     # -------------------------------------------------------------------------
 
-    def _version(self, params: dict) -> dict:
-        return {"version": str(self.signal_interface.version())}
+    async def _version(self, params: dict) -> dict:
+        return {"version": str(await self.signal_interface.call("version", "", []))}
 
-    def _submit_rate_limit(self, params: dict) -> None:
-        self.signal_interface.submitRateLimitChallenge(params["challenge"], params["captcha"])
+    async def _submit_rate_limit(self, params: dict) -> None:
+        await self.signal_interface.call("submitRateLimitChallenge", "ss", [params["challenge"], params["captcha"]])
         return None
 
-    def _upload_sticker_pack(self, params: dict) -> dict:
-        url = self.signal_interface.uploadStickerPack(params["stickerPackPath"])
+    async def _upload_sticker_pack(self, params: dict) -> dict:
+        url = await self.signal_interface.call("uploadStickerPack", "s", [params["stickerPackPath"]])
         return {"url": str(url)}
 
     # -------------------------------------------------------------------------
     # Identity handlers
     # -------------------------------------------------------------------------
 
-    def _list_identities(self, params: dict) -> list:
-        identities = self.signal_interface.listIdentities()
+    async def _list_identities(self, params: dict) -> list:
+        identities = await self.signal_interface.call("listIdentities", "", [])
         return [{"objectPath": str(i[0]), "uuid": str(i[1]), "number": str(i[2])} for i in identities]
 
-    def _get_identity_interface(self, number: str):
+    async def _get_identity_interface(self, number: str):
         """Get the org.asamk.Signal.Identity interface for a phone number."""
-        identity_object_path = self.signal_interface.getIdentity(number)
-        identity_obj = self.bus.get_object("org.asamk.Signal", identity_object_path)
-        return dbus.Interface(identity_obj, "org.asamk.Signal.Identity")
+        identity_object_path = await self.signal_interface.call("getIdentity", "s", [number])
+        return self._client.sub_interface(str(identity_object_path), "org.asamk.Signal.Identity")
 
-    def _trust_identity(self, params: dict) -> None:
-        identity_iface = self._get_identity_interface(params["number"])
-        identity_iface.trust()
+    async def _trust_identity(self, params: dict) -> None:
+        identity_iface = await self._get_identity_interface(params["number"])
+        await identity_iface.call("trust", "", [])
         return None
 
-    def _trust_identity_verified(self, params: dict) -> None:
-        identity_iface = self._get_identity_interface(params["number"])
-        identity_iface.trustVerified(params["safetyNumber"])
+    async def _trust_identity_verified(self, params: dict) -> None:
+        identity_iface = await self._get_identity_interface(params["number"])
+        await identity_iface.call("trustVerified", "s", [params["safetyNumber"]])
         return None

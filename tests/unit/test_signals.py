@@ -1,13 +1,19 @@
 """Tests for swb.signals module."""
 
+import asyncio
 import base64
-from unittest.mock import AsyncMock, MagicMock
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
-dbus = pytest.importorskip("dbus")
+from swb.signals import _path_to_account, create_signal_handler, serialize_signal
 
-from swb.signals import create_signal_handler, serialize_signal
+
+def make_signal(member: str, body: list, path: str = "/org/asamk/Signal"):
+    """Create a fake dbus-fast Message-like signal."""
+    return SimpleNamespace(member=member, body=body, path=path)
 
 
 class TestSerializeSignal:
@@ -15,13 +21,13 @@ class TestSerializeSignal:
 
     def test_message_received(self):
         """Test MessageReceived signal serialization."""
-        args = (
-            dbus.Int64(1234567890123),  # timestamp
-            dbus.String("+491234567890"),  # sender
-            dbus.Array([dbus.Byte(b) for b in b"group123"], signature="y"),  # groupId
-            dbus.String("Hello World"),  # message
-            dbus.Array([dbus.String("/path/to/attachment")]),  # attachments
-        )
+        args = [
+            1234567890123,  # timestamp
+            "+491234567890",  # sender
+            b"group123",  # groupId (ay -> bytes)
+            "Hello World",  # message
+            ["/path/to/attachment"],  # attachments
+        ]
 
         result = serialize_signal("MessageReceived", args)
 
@@ -34,13 +40,13 @@ class TestSerializeSignal:
 
     def test_message_received_empty_group(self):
         """Test MessageReceived with empty groupId."""
-        args = (
-            dbus.Int64(1234567890123),
-            dbus.String("+491234567890"),
-            dbus.Array([], signature="y"),  # empty groupId
-            dbus.String("Direct message"),
-            dbus.Array([], signature="s"),
-        )
+        args = [
+            1234567890123,
+            "+491234567890",
+            b"",  # empty groupId
+            "Direct message",
+            [],
+        ]
 
         result = serialize_signal("MessageReceived", args)
 
@@ -48,14 +54,14 @@ class TestSerializeSignal:
 
     def test_sync_message_received(self):
         """Test SyncMessageReceived signal serialization."""
-        args = (
-            dbus.Int64(1234567890123),  # timestamp
-            dbus.String("+491234567890"),  # sender
-            dbus.String("+499876543210"),  # destination
-            dbus.Array([dbus.Byte(b) for b in b"group456"], signature="y"),  # groupId
-            dbus.String("Sync message"),  # message
-            dbus.Array([dbus.String("/path/attach")]),  # attachments
-        )
+        args = [
+            1234567890123,  # timestamp
+            "+491234567890",  # sender
+            "+499876543210",  # destination
+            b"group456",  # groupId
+            "Sync message",  # message
+            ["/path/attach"],  # attachments
+        ]
 
         result = serialize_signal("SyncMessageReceived", args)
 
@@ -69,10 +75,7 @@ class TestSerializeSignal:
 
     def test_receipt_received(self):
         """Test ReceiptReceived signal serialization."""
-        args = (
-            dbus.Int64(1234567890123),  # timestamp
-            dbus.String("+491234567890"),  # sender
-        )
+        args = [1234567890123, "+491234567890"]
 
         result = serialize_signal("ReceiptReceived", args)
 
@@ -82,18 +85,14 @@ class TestSerializeSignal:
 
     def test_unknown_signal(self):
         """Test unknown signal falls back to generic format."""
-        args = (dbus.String("test"), dbus.Int64(123))
-
-        result = serialize_signal("UnknownSignal", args)
+        result = serialize_signal("UnknownSignal", ["test", 123])
 
         assert result["signal"] == "UnknownSignal"
         assert result["args"] == ["test", 123]
 
     def test_insufficient_args(self):
         """Test signal with insufficient args falls back to generic."""
-        args = (dbus.String("only one arg"),)
-
-        result = serialize_signal("MessageReceived", args)
+        result = serialize_signal("MessageReceived", ["only one arg"])
 
         assert result["signal"] == "MessageReceived"
         assert "args" in result  # Falls back to generic
@@ -102,184 +101,105 @@ class TestSerializeSignal:
 class TestCreateSignalHandler:
     """Test create_signal_handler function."""
 
-    def test_handler_creation(self):
-        """Test that handler can be created."""
+    async def test_handler_broadcasts_to_clients(self):
+        """Handler serializes the signal and sends it to each client."""
         clients = set()
-        lock = MagicMock()
-        lock.__enter__ = MagicMock(return_value=None)
-        lock.__exit__ = MagicMock(return_value=None)
-        loop = MagicMock()
+        handler = create_signal_handler(clients)
 
-        handler = create_signal_handler(clients, lock, loop)
-        assert callable(handler)
-
-    def test_handler_with_ws_send_str(self):
-        """Test handler with WebSocket that has send_str method."""
-        clients = set()
-        lock = MagicMock()
-        lock.__enter__ = MagicMock(return_value=None)
-        lock.__exit__ = MagicMock(return_value=None)
-        loop = MagicMock()
-
-        handler = create_signal_handler(clients, lock, loop)
-
-        # Add mock WebSocket client
         mock_ws = AsyncMock()
-        mock_ws.send_str = AsyncMock()
         clients.add(mock_ws)
 
-        # Call handler
-        handler(
-            dbus.Int64(1234567890123),
-            dbus.String("+491234567890"),
-            dbus.Array([dbus.Byte(b) for b in b"group123"], signature="y"),
-            dbus.String("Hello"),
-            dbus.Array([dbus.String("/path")]),
-            member="MessageReceived",
-        )
+        handler(make_signal("MessageReceived", [1, "+1", b"", "hi", []]))
 
-        # Verify send_str was scheduled
-        loop.call_soon_threadsafe.assert_called()
+        # send_str is scheduled via create_task; let it run
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
 
-    def test_handler_with_ws_send(self):
-        """Test handler with WebSocket that has send method."""
+        mock_ws.send_str.assert_called_once()
+        payload = json.loads(mock_ws.send_str.call_args.args[0])
+        assert payload["signal"] == "MessageReceived"
+        assert payload["message"] == "hi"
+        assert "event_id" in payload
+
+    async def test_handler_with_ws_send(self):
+        """Handler falls back to ws.send when send_str is absent."""
         clients = set()
-        lock = MagicMock()
-        lock.__enter__ = MagicMock(return_value=None)
-        lock.__exit__ = MagicMock(return_value=None)
-        loop = MagicMock()
+        handler = create_signal_handler(clients)
 
-        handler = create_signal_handler(clients, lock, loop)
-
-        # Add mock WebSocket client without send_str (uses send)
         mock_ws = AsyncMock()
-        del mock_ws.send_str  # Remove send_str attribute
+        del mock_ws.send_str
         mock_ws.send = AsyncMock()
         clients.add(mock_ws)
 
-        # Call handler
-        handler(
-            dbus.Int64(1234567890123),
-            dbus.String("+491234567890"),
-            member="ReceiptReceived",
-        )
+        handler(make_signal("ReceiptReceived", [1, "+1"]))
 
-        # Verify send was scheduled
-        loop.call_soon_threadsafe.assert_called()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        mock_ws.send.assert_called_once()
+
+    async def test_handler_appends_to_event_buffer(self):
+        """Serialized payloads are appended to the buffer before broadcast."""
+        from collections import deque
+
+        buf = deque(maxlen=10)
+        handler = create_signal_handler(set(), buf)
+
+        handler(make_signal("ReceiptReceived", [1, "+1"]))
+
+        assert len(buf) == 1
+        assert json.loads(buf[0])["signal"] == "ReceiptReceived"
+
+    async def test_handler_no_buffer_when_none(self):
+        """No buffering when event_buffer is None."""
+        handler = create_signal_handler(set(), None)
+        handler(make_signal("ReceiptReceived", [1, "+1"]))  # must not raise
 
 
 class TestPathToAccount:
     """Test _path_to_account helper."""
 
     def test_account_path(self):
-        from swb.signals import _path_to_account
-
         assert _path_to_account("/org/asamk/Signal/_491234567890") == "+491234567890"
 
     def test_root_path_returns_none(self):
-        from swb.signals import _path_to_account
-
         assert _path_to_account("/org/asamk/Signal") is None
 
     def test_empty_path_returns_none(self):
-        from swb.signals import _path_to_account
-
         assert _path_to_account("") is None
 
     def test_international_number(self):
-        from swb.signals import _path_to_account
-
         assert _path_to_account("/org/asamk/Signal/_15555550100") == "+15555550100"
 
 
 class TestSignalHandlerAccount:
     """Test that account is included in signal payloads from multi-account paths."""
 
-    def test_account_included_for_account_path(self):
+    async def test_account_included_for_account_path(self):
         """handler() adds 'account' key when emitted from a per-account path."""
-        import json
-
         clients = set()
-        lock = MagicMock()
-        lock.__enter__ = MagicMock(return_value=None)
-        lock.__exit__ = MagicMock(return_value=None)
-        loop = MagicMock()
-
-        handler = create_signal_handler(clients, lock, loop)
+        handler = create_signal_handler(clients)
 
         mock_ws = AsyncMock()
-        mock_ws.send_str = AsyncMock()
         clients.add(mock_ws)
 
-        sent_payloads = []
-
-        def capture(coro, lp):
-            import asyncio
-
-            fut = MagicMock()
-            fut.add_done_callback = MagicMock()
-            # Extract the payload from the coroutine args
-            # The coro is ws.send_str(payload) - inspect its args via __wrapped__ or closure
-            return fut
-
-        loop.run_coroutine_threadsafe = capture
-
-        # Manually call handler and check what would be sent via asyncio.run_coroutine_threadsafe
-        # Simpler: patch run_coroutine_threadsafe to capture the argument
-        import asyncio
-        from unittest.mock import patch
-
-        captured = []
-
-        def fake_run(coro, lp):
-            # Extract payload from the coroutine
-            captured.append(coro.cr_frame.f_locals.get("payload") or getattr(coro, "__wrapped__", None))
-            fut = MagicMock()
-            fut.add_done_callback = MagicMock()
-            return fut
-
-        with patch("swb.signals.asyncio.run_coroutine_threadsafe", fake_run):
-            handler(
-                dbus.Int64(1234567890),
-                dbus.String("+491234567890"),
-                dbus.String("Hello"),
-                dbus.Array([], signature="s"),
-                member="MessageReceived",
+        handler(
+            make_signal(
+                "MessageReceived",
+                [1234567890, "+491234567890", b"", "Hello", []],
                 path="/org/asamk/Signal/_491234567890",
             )
-
-        # The account should be in the payload - verify via serialize + account injection
-        # Since we can't easily intercept the coroutine, test the payload_dict construction
-        # directly via serialize_signal + account logic
-        from swb.signals import _path_to_account, serialize_signal
-
-        payload_dict = serialize_signal(
-            "MessageReceived",
-            (
-                dbus.Int64(1234567890),
-                dbus.String("+491234567890"),
-                dbus.Array([], signature="y"),
-                dbus.String("Hello"),
-                dbus.Array([], signature="s"),
-            ),
         )
-        account = _path_to_account("/org/asamk/Signal/_491234567890")
-        if account:
-            payload_dict["account"] = account
 
-        assert payload_dict["account"] == "+491234567890"
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        payload = json.loads(mock_ws.send_str.call_args.args[0])
+        assert payload["account"] == "+491234567890"
 
     def test_no_account_for_root_path(self):
         """No 'account' key when emitted from the root path (single-account mode)."""
-        from swb.signals import _path_to_account, serialize_signal
-
-        payload_dict = serialize_signal(
-            "ReceiptReceived",
-            (
-                dbus.Int64(1234567890),
-                dbus.String("+491234567890"),
-            ),
-        )
+        payload_dict = serialize_signal("ReceiptReceived", [1234567890, "+491234567890"])
         account = _path_to_account("/org/asamk/Signal")
         if account:
             payload_dict["account"] = account

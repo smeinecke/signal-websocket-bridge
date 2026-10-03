@@ -4,22 +4,17 @@ import asyncio
 import hmac
 import json
 import logging
-import threading
-from typing import Callable
+from typing import Awaitable, Callable
 
 import aiohttp
 from aiohttp import web
+from dbus_fast.errors import DBusError
 
 from swb.config import Config
-from swb.dbus_client import is_connected, subscribe_receive, unsubscribe_receive
 
-# Handle missing dbus module (system package)
-try:
-    from dbus.exceptions import DBusException
-except ImportError:
 
-    class DBusException(Exception):  # type: ignore[no-redef]
-        pass
+async def _noop() -> None:
+    pass
 
 
 class WebSocketServer:
@@ -31,24 +26,28 @@ class WebSocketServer:
         dispatch_factory: Callable,
         asyncapi_json_func: Callable,
         asyncapi_yaml_func: Callable,
+        is_connected: Callable[[], bool],
+        subscribe: Callable[[], Awaitable] = _noop,
+        unsubscribe: Callable[[], Awaitable] = _noop,
         connected_clients: set | None = None,
-        clients_lock: threading.Lock | None = None,
         event_buffer=None,
     ):
         self.config = config
         self.dispatch_factory = dispatch_factory
         self.asyncapi_json = asyncapi_json_func
         self.asyncapi_yaml = asyncapi_yaml_func
+        self.is_connected = is_connected
+        self._subscribe = subscribe
+        self._unsubscribe = unsubscribe
 
         # Allow external state to be injected so the DBus signal handler
-        # and the WebSocket server share the same client tracking objects.
+        # and the WebSocket server share the same client tracking object.
         self.connected_clients: set[web.WebSocketResponse] = connected_clients if connected_clients is not None else set()
-        self.clients_lock: threading.Lock = clients_lock if clients_lock is not None else threading.Lock()
         self.event_buffer = event_buffer  # deque or None; shared with signal handler
 
     async def health_handler(self, request: web.Request) -> web.Response:
         """Liveness/readiness probe. Returns 200 when connected to DBus, 503 when reconnecting."""
-        if is_connected():
+        if self.is_connected():
             return web.json_response({"status": "ok"})
         return web.json_response({"status": "reconnecting"}, status=503)
 
@@ -113,12 +112,11 @@ class WebSocketServer:
                 logging.warning(f"Auth failed from {peer}: timeout")
                 return ws
 
-        with self.clients_lock:
-            self.connected_clients.add(ws)
-            first_client = len(self.connected_clients) == 1
+        self.connected_clients.add(ws)
+        first_client = len(self.connected_clients) == 1
         logging.info(f"WebSocket client connected from {peer}")
         if first_client:
-            subscribe_receive()
+            await self._subscribe()
 
         if self.event_buffer is not None:
             snapshot = list(self.event_buffer)
@@ -148,12 +146,12 @@ class WebSocketServer:
                     params = req.get("params", {})
 
                     try:
-                        result = await asyncio.to_thread(dispatch, method, params)
+                        result = await dispatch(method, params)
                         await ws.send_str(json.dumps({"id": req_id, "result": result}))
-                    except DBusException as exc:
+                    except DBusError as exc:
                         # Connection errors trigger a background reconnect. The client
                         # should wait for {"signal":"Reconnected"} then retry the call.
-                        reconnecting = not is_connected()
+                        reconnecting = not self.is_connected()
                         await ws.send_str(
                             json.dumps({
                                 "id": req_id,
@@ -170,12 +168,11 @@ class WebSocketServer:
                     break
 
         finally:
-            with self.clients_lock:
-                self.connected_clients.discard(ws)
-                last_client = len(self.connected_clients) == 0
+            self.connected_clients.discard(ws)
+            last_client = len(self.connected_clients) == 0
             logging.info("WebSocket client disconnected")
             if last_client:
-                unsubscribe_receive()
+                await self._unsubscribe()
 
         return ws
 
@@ -216,9 +213,9 @@ class WebSocketServer:
             return web.json_response({"error": "missing method"}, status=400)
 
         try:
-            result = await asyncio.to_thread(dispatch, method, params)
+            result = await dispatch(method, params)
             return web.json_response({"id": req_id, "result": result})
-        except DBusException as exc:
+        except DBusError as exc:
             return web.json_response({"id": req_id, "error": str(exc)}, status=500)
         except (KeyError, TypeError, ValueError) as exc:
             return web.json_response({"id": req_id, "error": f"bad params: {exc}"}, status=400)

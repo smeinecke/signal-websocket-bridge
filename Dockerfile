@@ -16,14 +16,8 @@ ARG SIGNAL_CLI_DOWNLOAD_URL=""
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-venv \
-    python3-dbus \
-    python3-gi \
-    libcairo2 \
-    libgirepository-1.0-1 \
-    libgirepository-2.0-0 \
-    libglib2.0-0t64 \
-    libdbus-1-3 \
     dbus-daemon \
+    dbus-bin \
     default-jre-headless \
     ca-certificates \
     tar \
@@ -64,15 +58,9 @@ FROM runtime-base AS builder
 
 WORKDIR /app
 
-# Install build dependencies for dbus-python.
+# Install build tooling (dbus-fast is pure Python - no native build deps needed).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
-    pkg-config \
-    libdbus-1-dev \
-    libglib2.0-dev \
-    libcairo2-dev \
-    libgirepository-2.0-dev \
-    gcc \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
@@ -109,8 +97,7 @@ ENV SIGNAL_WS_HOST=0.0.0.0 \
     SIGNAL_ACCOUNT="" \
     SIGNAL_CLI_OPTS="" \
     SIGNAL_BUFFER_SIZE=0 \
-    PATH="/app/.venv/bin:${PATH}" \
-    PYTHONPATH="/usr/lib/python3/dist-packages"
+    PATH="/app/.venv/bin:${PATH}"
 
 # Liveness / readiness probe via the /health endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \

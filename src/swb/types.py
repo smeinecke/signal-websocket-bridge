@@ -4,53 +4,42 @@ import base64
 import os
 from pathlib import Path
 
-import dbus
+from dbus_fast import Variant
 
 
 def dbus_to_native(val):
-    """Recursively convert dbus types to plain Python for JSON serialization.
+    """Recursively convert dbus-fast types to plain Python for JSON serialization.
 
-    ay (byte arrays) → base64 strings.
-    Structs → lists (caller can reshape as needed).
+    ay (byte arrays) arrive as bytes -> base64 strings.
+    Variants are unwrapped; lists/tuples/dicts are recursed into.
     """
-    if isinstance(val, dbus.String):
-        return str(val)
-    if isinstance(val, (dbus.Int64, dbus.Int32, dbus.UInt32, dbus.UInt64)):
-        return int(val)
-    if isinstance(val, dbus.Boolean):
-        return bool(val)
-    if isinstance(val, dbus.Byte):
-        return int(val)
-    if isinstance(val, dbus.Array):
-        # ay → base64 string
-        sig = getattr(val, "signature", None)
-        if sig == "y" or (val and isinstance(val[0], dbus.Byte)):
-            return base64.b64encode(bytes(int(b) for b in val)).decode()
-        return [dbus_to_native(v) for v in val]
-    if isinstance(val, dbus.Struct):
-        return [dbus_to_native(v) for v in val]
-    if isinstance(val, dbus.Dictionary):
+    if isinstance(val, Variant):
+        return dbus_to_native(val.value)
+    if isinstance(val, (bytes, bytearray)):
+        return base64.b64encode(bytes(val)).decode()
+    if isinstance(val, dict):
         return {dbus_to_native(k): dbus_to_native(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [dbus_to_native(v) for v in val]
     return val
 
 
-def to_bytes(s: str) -> dbus.Array:
-    """base64 string → dbus byte array (ay). Used for groupId, receipt, etc."""
-    raw = base64.b64decode(s)
-    return dbus.Array([dbus.Byte(b) for b in raw], signature=dbus.Signature("y"))
+def to_bytes(s: str) -> bytes:
+    """base64 string -> bytes for ay params (groupId, receipt, etc.)."""
+    return base64.b64decode(s)
 
 
-def to_int64(v) -> dbus.Int64:
-    return dbus.Int64(int(v))
+def to_int64(v) -> int:
+    return int(v)
 
 
-def to_int64_array(lst: list) -> dbus.Array:
-    return dbus.Array([dbus.Int64(int(v)) for v in lst], signature=dbus.Signature("x"))
+def to_int64_array(lst: list) -> list[int]:
+    return [int(v) for v in lst]
 
 
-def to_string_array(lst: list) -> dbus.Array:
-    """Convert list of strings to dbus Array of strings (as signature)."""
-    return dbus.Array(lst, signature=dbus.Signature("s"))
+def to_string_array(lst: list) -> list[str]:
+    """Convert list of strings for as params."""
+    return [str(v) for v in lst]
 
 
 def validate_attachments(attachments: list[str]) -> None:

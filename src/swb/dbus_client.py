@@ -1,190 +1,184 @@
-"""DBus client with auto-reconnection support."""
+"""Asyncio-native DBus client for signal-cli (dbus-fast), with auto-reconnect."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import threading
 from typing import Any, Callable
 
-import dbus
-import dbus.mainloop.glib
+from dbus_fast import BusType, Message, MessageType
+from dbus_fast.aio import MessageBus
+from dbus_fast.errors import DBusError
 
 from swb.config import Config
 
-# Global state
-_bus: dbus.Bus | None = None
-_signal_object: dbus.ProxyObject | None = None
-_signal_interface: dbus.Interface | None = None
-_reconnect_lock = threading.Lock()
-_reconnect_backoff = 1  # seconds, doubles up to 60s cap
-_dbus_connected = False
-_reconnect_thread: threading.Thread | None = None
-_reconnect_wake = threading.Event()  # set when org.asamk.Signal reappears on the bus
-_initial_connect = True  # distinguishes first connect from reconnect
-_single_account_mode = False  # set at connect time; drives probe() interface choice
+_SIGNAL_BUS_NAME = "org.asamk.Signal"
+_SIGNAL_ROOT_PATH = "/org/asamk/Signal"
+_SIGNAL_IFACE = "org.asamk.Signal"
+_CONTROL_IFACE = "org.asamk.SignalControl"
+_DAEMON_NAME = "org.freedesktop.DBus"
+_DAEMON_PATH = "/org/freedesktop/DBus"
 
-# Stored at connect time so the reconnect thread can use them
-_config: Config | None = None
-_loop: Any = None
-_signal_handler: Callable | None = None
-_connected_clients: set = set()
-_clients_lock: threading.Lock | None = None
+# Error names that mean the connection to signal-cli is gone
+_CONNECTION_ERROR_NAMES = ("ServiceUnknown", "NoReply", "Disconnected", "UnknownObject")
+
+# Transport-level failures raised by in-flight calls on a dead bus
+_TRANSPORT_ERRORS = (OSError, EOFError, BrokenPipeError, TimeoutError)
+
+_MAX_BACKOFF = 60  # seconds
 
 
-def setup_glib_loop():
-    """Initialize GLib main loop for DBus."""
-    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-
-
-def _build_object_path(config: Config) -> str:
-    """Build DBus object path from account number."""
-    if config.account:
-        # +4915... -> /org/asamk/Signal/_4915...
-        dbus_number = config.account.replace("+", "_")
-        return f"/org/asamk/Signal/{dbus_number}"
-    return "/org/asamk/Signal"
-
-
-def _autodiscover_object_path(bus: dbus.Bus) -> str:
-    """Discover the per-account object path.
-
-    Multi-account mode: calls SignalControl.listAccounts() to find account sub-paths.
-    Single-account mode: the root object already implements org.asamk.Signal directly,
-    so listAccounts() will fail - fall back to the root path in that case.
-    """
-    root = bus.get_object("org.asamk.Signal", "/org/asamk/Signal")
+def _log_send_error(future) -> None:
+    """Done-callback for broadcast send tasks - logs failures at DEBUG level."""
     try:
-        control = dbus.Interface(root, "org.asamk.SignalControl")
-        accounts = control.listAccounts()  # type: ignore[attr-defined]
-    except dbus.exceptions.DBusException:
-        # Single-account mode: root object is org.asamk.Signal, not SignalControl
-        logging.info("signal-cli running in single-account mode, using root path")
-        return "/org/asamk/Signal"
-    if not accounts:
-        logging.warning("No accounts registered in signal-cli, using root path")
-        return "/org/asamk/Signal"
-    if len(accounts) > 1:
-        logging.warning(f"Multiple accounts found: {list(accounts)}. Set SIGNAL_ACCOUNT to select one explicitly.")
-    path = str(accounts[0])
-    logging.info(f"Auto-discovered account path: {path}")
-    return path
+        future.result()
+    except Exception as exc:
+        logging.debug(f"Failed to broadcast to client: {exc}")
 
 
-def get_bus(config: Config) -> dbus.Bus:
-    """Get the appropriate DBus bus."""
-    if config.bus == "session":
-        logging.info("Using DBus SessionBus")
-        return dbus.SessionBus()
-    else:
-        logging.info("Using DBus SystemBus")
-        return dbus.SystemBus()
+class BoundInterface:
+    """Calls a named DBus interface on a fixed object path.
+
+    Deliberately avoids introspection-derived proxies: signal-cli's root
+    object dispatches org.asamk.Signal methods even when the interface is not
+    declared in introspection data (e.g. while no account is registered),
+    which introspection-bound proxies cannot express.
+    """
+
+    def __init__(self, bus: MessageBus, path: str, iface_name: str):
+        self._bus = bus
+        self._path = path
+        self._iface = iface_name
+
+    async def call(self, member: str, signature: str, body: list) -> Any:
+        """Invoke member on the interface; unwrap reply body like dbus-python did."""
+        reply = await self._bus.call(
+            Message(
+                destination=_SIGNAL_BUS_NAME,
+                path=self._path,
+                interface=self._iface,
+                member=member,
+                signature=signature,
+                body=body,
+            )
+        )
+        if reply.message_type == MessageType.ERROR:
+            raise DBusError._from_message(reply)
+        if not reply.body:
+            return None
+        if len(reply.body) == 1:
+            return reply.body[0]
+        return reply.body
 
 
-def connect_signal_interface(
-    config: Config,
-    loop: Any,
-    signal_handler: Callable,
-    connected_clients: set,
-    clients_lock: threading.Lock,
-) -> bool:
-    """Connect to signal-cli DBus interface. Returns True on success."""
-    global _bus, _signal_object, _signal_interface, _dbus_connected, _reconnect_backoff
-    global _loop, _signal_handler, _connected_clients, _clients_lock, _config, _initial_connect, _single_account_mode
+class SignalClient:
+    """Asyncio-native signal-cli DBus client.
 
-    _config = config
-    _loop = loop
-    _signal_handler = signal_handler
-    _connected_clients = connected_clients
-    _clients_lock = clients_lock
+    Owns the bus connection, per-account interfaces, signal dispatch,
+    and reconnect state. Everything runs on the event loop - no threads.
+    """
 
-    with _reconnect_lock:
+    def __init__(self, config: Config, signal_handler: Callable, connected_clients: set):
+        self.config = config
+        self._signal_handler = signal_handler
+        self._connected_clients = connected_clients
+
+        self.bus: MessageBus | None = None
+        self._signal_iface: BoundInterface | None = None
+        self._object_path = _SIGNAL_ROOT_PATH
+        self._introspection = None  # intr.Node of the connected account object
+        self._account_ifaces: dict[str, BoundInterface] = {}
+
+        self.connected = False
+        self.single_account_mode = False
+
+        self._reconnect_task: asyncio.Task | None = None
+        self._reconnect_wake = asyncio.Event()
+        self._watch_task: asyncio.Task | None = None
+        self._initial_connect = True
+
+    # ------------------------------------------------------------------
+    # Connection lifecycle
+    # ------------------------------------------------------------------
+
+    def _object_path_for(self, config: Config) -> str:
+        """Build DBus object path from account number."""
+        if config.account:
+            return f"{_SIGNAL_ROOT_PATH}/{config.account.replace('+', '_')}"
+        return _SIGNAL_ROOT_PATH
+
+    async def connect(self) -> bool:
+        """Connect to the signal-cli DBus interface. Returns True on success."""
+        old_bus = self.bus
         try:
-            # Remove signal receiver from the old bus before replacing it.
-            # Without this, GLib retains a C-level reference to the old bus
-            # keeping its receiver alive alongside the new one, causing every
-            # incoming signal to be delivered N+1 times after N reconnects.
-            if _bus is not None and signal_handler is not None:
-                try:
-                    _bus.remove_signal_receiver(signal_handler, dbus_interface="org.asamk.Signal")
-                    _bus.remove_signal_receiver(
-                        _on_name_owner_changed,
-                        signal_name="NameOwnerChanged",
-                        dbus_interface="org.freedesktop.DBus",
-                    )
-                except Exception:  # nosec B110 - Intentionally ignore cleanup failures
-                    pass
+            bus = MessageBus(bus_type=BusType.SESSION if self.config.bus == "session" else BusType.SYSTEM)
+            await bus.connect()
 
-            _bus = get_bus(config)
-            if _bus is None:
-                return False
+            control = BoundInterface(bus, _SIGNAL_ROOT_PATH, _CONTROL_IFACE)
+            signal_root = BoundInterface(bus, _SIGNAL_ROOT_PATH, _SIGNAL_IFACE)
 
-            root_obj = _bus.get_object("org.asamk.Signal", "/org/asamk/Signal", introspect=False)
+            # Detect mode via introspection: SignalControl only exists in
+            # multi-account mode. In single-account mode the root object
+            # implements org.asamk.Signal directly.
+            root_node = await bus.introspect(_SIGNAL_BUS_NAME, _SIGNAL_ROOT_PATH)
+            iface_names = {i.name for i in root_node.interfaces}
 
-            # Detect mode via listAccounts() - it only exists on SignalControl
-            # (multi-account mode). signal-cli responds to version() regardless of
-            # which interface is specified, so version() alone cannot detect the mode.
-            try:
-                control = dbus.Interface(root_obj, "org.asamk.SignalControl")
-                exported_accounts = [str(p) for p in control.listAccounts()]  # type: ignore
-                single_account_mode = False
-            except dbus.exceptions.DBusException as exc:
-                if "UnknownMethod" not in exc.get_dbus_name():
-                    raise  # Transport/service error, not a mode issue
-                # Single-account mode: root IS the account, implements org.asamk.Signal
-                dbus.Interface(root_obj, "org.asamk.Signal").version()  # type: ignore  liveness probe
-                single_account_mode = True
+            if _CONTROL_IFACE in iface_names:
+                single = False
+                exported_accounts = [str(p) for p in await control.call("listAccounts", "", []) or []]
+            else:
+                await signal_root.call("version", "", [])  # liveness probe
+                single = True
                 exported_accounts = []
                 logging.info("signal-cli running in single-account mode")
 
-            if single_account_mode:
-                object_path = "/org/asamk/Signal"
+            if single:
+                object_path = _SIGNAL_ROOT_PATH
             else:
-                object_path = _build_object_path(config)
-                if object_path == "/org/asamk/Signal":
-                    object_path = _autodiscover_object_path(_bus)
-                # Verify the per-account path is already exported. signal-cli
-                # registers the service name before account objects are ready.
-                if object_path != "/org/asamk/Signal" and object_path not in exported_accounts:
-                    raise dbus.exceptions.DBusException(f"Account path {object_path} not yet exported by signal-cli (exported: {exported_accounts})")
+                object_path = self._object_path_for(self.config)
+                if object_path == _SIGNAL_ROOT_PATH:
+                    object_path = self._autodiscover_object_path(exported_accounts)
+                if object_path != _SIGNAL_ROOT_PATH and object_path not in exported_accounts:
+                    raise DBusError(
+                        "org.asamk.Signal.Error.AccountNotExported",
+                        f"Account path {object_path} not yet exported by signal-cli (exported: {exported_accounts})",
+                    )
 
-            _signal_object = _bus.get_object("org.asamk.Signal", object_path, introspect=False)
-            _signal_interface = dbus.Interface(_signal_object, "org.asamk.Signal")
+            # Introspection of the selected object for AsyncAPI generation
+            node = await bus.introspect(_SIGNAL_BUS_NAME, object_path)
 
-            _single_account_mode = single_account_mode
-            _dbus_connected = True
-            _reconnect_backoff = 1
+            # Route signals to our message handler: all org.asamk.Signal
+            # emissions, plus NameOwnerChanged for fast outage detection.
+            await self._add_match_on(bus, "type='signal',interface='org.asamk.Signal'")
+            await self._add_match_on(
+                bus,
+                "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged'",
+            )
+            bus.add_message_handler(self._handle_message)
+
+            self.bus = bus
+            self._signal_iface = BoundInterface(bus, object_path, _SIGNAL_IFACE)
+            self._object_path = object_path
+            self._introspection = node
+            self._account_ifaces.clear()
+            self.single_account_mode = single
+            self.connected = True
+
+            if old_bus is not None:
+                old_bus.disconnect()
+
+            self._watch_task = asyncio.create_task(self._watch_transport(bus))
             logging.info(f"Connected to signal-cli at {object_path}")
 
-            if signal_handler is not None:
-                _bus.add_signal_receiver(
-                    signal_handler,
-                    dbus_interface="org.asamk.Signal",
-                    member_keyword="member",
-                    path_keyword="path",
-                )
-                # Fast outage detection: the bus daemon emits NameOwnerChanged
-                # as soon as the signal-cli name vanishes - no need to wait for
-                # a failed call or the 30s watchdog probe.
-                _bus.add_signal_receiver(
-                    _on_name_owner_changed,
-                    signal_name="NameOwnerChanged",
-                    dbus_interface="org.freedesktop.DBus",
-                )
-
-            # Clear stale introspection cache so /asyncapi reflects the live instance
-            from swb.asyncapi import clear_introspection_cache
-
-            clear_introspection_cache()
-
-            if _initial_connect:
-                _initial_connect = False
+            if self._initial_connect:
+                self._initial_connect = False
             else:
-                _broadcast_to_clients({"signal": "Reconnected"})
+                self._broadcast({"signal": "Reconnected"})
                 # Re-subscribe for keep-alive if clients were connected during the outage
-                if _connected_clients and _signal_interface is not None:
+                if self._connected_clients:
                     try:
-                        _signal_interface.subscribeReceive()  # type: ignore[attr-defined]
+                        await self._signal_iface.call("subscribeReceive", "", [])
                     except Exception as exc:
                         logging.warning(f"subscribeReceive after reconnect failed: {exc}")
 
@@ -192,178 +186,163 @@ def connect_signal_interface(
 
         except Exception as exc:
             logging.error(f"DBus connection failed: {exc}")
-            _dbus_connected = False
+            self.connected = False
             return False
 
+    async def _add_match_on(self, bus: MessageBus, rule: str) -> None:
+        """Register a signal match rule with the bus daemon."""
+        reply = await bus.call(
+            Message(
+                destination=_DAEMON_NAME,
+                path=_DAEMON_PATH,
+                interface=_DAEMON_NAME,
+                member="AddMatch",
+                signature="s",
+                body=[rule],
+            )
+        )
+        if reply.message_type == MessageType.ERROR:
+            raise DBusError(reply.error_name or "org.freedesktop.DBus.Error.Failed", str(reply.body))
 
-def _reconnect_loop():
-    """Background thread: retry connecting with exponential backoff."""
-    global _reconnect_backoff
+    def _autodiscover_object_path(self, accounts: list[str]) -> str:
+        """Pick the account sub-path when signal-cli runs multi-account."""
+        if not accounts:
+            logging.warning("No accounts registered in signal-cli, using root path")
+            return _SIGNAL_ROOT_PATH
+        if len(accounts) > 1:
+            logging.warning(f"Multiple accounts found: {list(accounts)}. Set SIGNAL_ACCOUNT to select one explicitly.")
+        path = str(accounts[0])
+        logging.info(f"Auto-discovered account path: {path}")
+        return path
 
-    while not _dbus_connected:
-        logging.info(f"Reconnecting in {_reconnect_backoff}s...")
-        _reconnect_wake.wait(_reconnect_backoff)
-        _reconnect_wake.clear()
-        _reconnect_backoff = min(_reconnect_backoff * 2, 60)
+    # ------------------------------------------------------------------
+    # Disconnect / reconnect
+    # ------------------------------------------------------------------
 
-        if _config is None:
-            continue
+    def _handle_message(self, msg: Message):
+        """dbus-fast message handler - runs on the event loop."""
+        if msg.message_type is not MessageType.SIGNAL:
+            return None
+        if msg.interface == _SIGNAL_IFACE:
+            self._signal_handler(msg)
+        elif msg.member == "NameOwnerChanged" and msg.interface == _DAEMON_NAME:
+            self._on_name_owner_changed(msg.body)
+        return None
 
-        if _signal_handler is None or _clients_lock is None:
-            continue
-        if connect_signal_interface(_config, _loop, _signal_handler, _connected_clients, _clients_lock):
-            logging.info("Reconnected to signal-cli")
-            break
+    def _on_name_owner_changed(self, body) -> None:
+        """Track org.asamk.Signal ownership: vanish -> instant outage detection;
+        reappear -> wake the reconnect loop for an immediate retry."""
+        name, _old_owner, new_owner = body[0], body[1], body[2]
+        if name != _SIGNAL_BUS_NAME:
+            return
+        if not new_owner:
+            self._on_connection_lost(f"{_SIGNAL_BUS_NAME} vanished from the bus")
+        elif not self.connected:
+            self._reconnect_wake.set()
 
+    async def _watch_transport(self, bus: MessageBus) -> None:
+        """Resolve when the transport dies (e.g. dbus-daemon itself exits)."""
+        await bus.wait_for_disconnect()
+        if bus is self.bus:
+            self._on_connection_lost("bus connection closed")
 
-def _log_send_error(future) -> None:
-    """Done-callback for run_coroutine_threadsafe - logs failed sends at DEBUG level."""
-    try:
-        future.result()
-    except Exception as exc:
-        logging.debug(f"Failed to broadcast to client: {exc}")
+    def _on_connection_lost(self, reason: str) -> None:
+        """Mark the connection down, notify clients, and start the reconnect task."""
+        if self.connected:
+            logging.warning(f"DBus connection lost: {reason}")
+            self.connected = False
+            self._broadcast({"signal": "Disconnected"})
 
+        if self._reconnect_task is None or self._reconnect_task.done():
+            self._reconnect_task = asyncio.create_task(self._reconnect_loop())
 
-def _broadcast_to_clients(payload: dict) -> None:
-    """Broadcast a system message to all connected WebSocket clients."""
-    if not _connected_clients or not _clients_lock:
-        return
+    async def _reconnect_loop(self) -> None:
+        """Retry connecting with exponential backoff until connected."""
+        backoff = 1
+        while not self.connected:
+            logging.info(f"Reconnecting in {backoff}s...")
+            try:
+                await asyncio.wait_for(self._reconnect_wake.wait(), timeout=backoff)
+            except TimeoutError:
+                pass
+            self._reconnect_wake.clear()
+            if await self.connect():
+                logging.info("Reconnected to signal-cli")
+                return
+            backoff = min(backoff * 2, _MAX_BACKOFF)
 
-    msg = json.dumps(payload)
-    with _clients_lock:
-        clients_snapshot = list(_connected_clients)
+    def note_error(self, exc: Exception) -> None:
+        """Classify a failed call: connection errors trigger the reconnect path."""
+        if isinstance(exc, DBusError):
+            if not any(e in (exc.type or "") for e in _CONNECTION_ERROR_NAMES):
+                return  # application-level error - caller reports it, no reconnect
+        elif not isinstance(exc, _TRANSPORT_ERRORS):
+            return  # not a connection failure either
 
-    import asyncio
+        self._on_connection_lost(getattr(exc, "type", None) or str(exc))
 
-    for ws in clients_snapshot:
+    # ------------------------------------------------------------------
+    # Interfaces and calls
+    # ------------------------------------------------------------------
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    @property
+    def introspection(self):
+        """Introspection Node of the connected account object (for AsyncAPI)."""
+        return self._introspection
+
+    def interface(self, account: str | None) -> BoundInterface:
+        """Return the org.asamk.Signal interface for an account (or default)."""
+        if self._signal_iface is None:
+            raise RuntimeError("DBus interface not connected")
+        if account is None:
+            return self._signal_iface
+        if account not in self._account_ifaces:
+            if self.bus is None:
+                raise RuntimeError("DBus bus not connected")
+            path = f"{_SIGNAL_ROOT_PATH}/{account.replace('+', '_')}"
+            self._account_ifaces[account] = BoundInterface(self.bus, path, _SIGNAL_IFACE)
+        return self._account_ifaces[account]
+
+    def sub_interface(self, path: str, iface_name: str) -> BoundInterface:
+        """Return a bound interface for a sub-object (groups, identities)."""
+        if self.bus is None:
+            raise RuntimeError("DBus bus not connected")
+        return BoundInterface(self.bus, path, iface_name)
+
+    async def subscribe_receive(self) -> None:
+        """Register a keep-alive token for the unidentified Signal WebSocket."""
         try:
-            coro = ws.send_str(msg) if hasattr(ws, "send_str") else ws.send(msg)
-            future = asyncio.run_coroutine_threadsafe(coro, _loop)
-            future.add_done_callback(_log_send_error)
-        except Exception:
-            logging.debug("Failed to broadcast to client (disconnected?)", exc_info=True)
+            if self._signal_iface is not None:
+                await self._signal_iface.call("subscribeReceive", "", [])
+            logging.debug("subscribeReceive() called - keep-alive active")
+        except Exception as exc:
+            logging.warning(f"subscribeReceive failed: {exc}")
 
+    async def unsubscribe_receive(self) -> None:
+        """Remove a keep-alive token when the last client disconnects."""
+        try:
+            if self._signal_iface is not None:
+                await self._signal_iface.call("unsubscribeReceive", "", [])
+            logging.debug("unsubscribeReceive() called")
+        except Exception as exc:
+            logging.warning(f"unsubscribeReceive failed: {exc}")
 
-def _on_connection_lost(reason: str) -> None:
-    """Mark the connection down, notify clients, and start the reconnect loop."""
-    global _dbus_connected, _reconnect_thread
+    # ------------------------------------------------------------------
+    # Broadcast to WebSocket clients
+    # ------------------------------------------------------------------
 
-    if _dbus_connected:
-        logging.warning(f"DBus connection lost: {reason}")
-        _dbus_connected = False
-        _broadcast_to_clients({"signal": "Disconnected"})
-
-    # Start background reconnect thread if not already running
-    if _reconnect_thread is None or not _reconnect_thread.is_alive():
-        _reconnect_thread = threading.Thread(target=_reconnect_loop, daemon=True)
-        _reconnect_thread.start()
-
-
-def _on_name_owner_changed(name, _old_owner, new_owner, **_kwargs):
-    """Track org.asamk.Signal ownership on the bus (runs on the GLib thread).
-
-    Vanish -> instant outage detection. Reappear -> wake the reconnect loop
-    for an immediate retry instead of waiting out the backoff sleep.
-    """
-    if name != "org.asamk.Signal":
-        return
-    if not new_owner:
-        _on_connection_lost("org.asamk.Signal vanished from the bus")
-    elif not _dbus_connected:
-        _reconnect_wake.set()
-
-
-def handle_dbus_error(exc: Exception) -> None:
-    """On DBus connection errors: mark disconnected, start background reconnect, re-raise.
-
-    Non-connection DBus errors are re-raised immediately without triggering reconnect.
-    """
-    if not isinstance(exc, dbus.exceptions.DBusException):
-        raise exc
-
-    error_name = exc.get_dbus_name()  # type: ignore[union-attr]
-    is_connection_error = any(e in error_name for e in ("ServiceUnknown", "NoReply", "Disconnected", "UnknownObject"))
-
-    if not is_connection_error:
-        raise exc
-
-    _on_connection_lost(error_name)
-
-    raise exc
-
-
-def subscribe_receive() -> None:
-    """Register a keep-alive token for the unidentified Signal WebSocket.
-
-    Calls subscribeReceive() on signal-cli, which increments an internal counter and
-    registers keep-alive tokens on both Signal WebSockets when the counter goes 0→1.
-    Call once per connected bridge client (or at least on first-client transition).
-    """
-    try:
-        get_interface().subscribeReceive()  # type: ignore[attr-defined]
-        logging.debug("subscribeReceive() called - keep-alive active")
-    except Exception as exc:
-        logging.warning(f"subscribeReceive failed: {exc}")
-
-
-def unsubscribe_receive() -> None:
-    """Remove a keep-alive token, stopping keep-alive when the counter reaches zero.
-
-    Calls unsubscribeReceive() on signal-cli, which decrements the internal counter
-    and removes keep-alive tokens when the counter reaches zero.
-    Call once per disconnecting bridge client (or at least on last-client transition).
-    """
-    try:
-        get_interface().unsubscribeReceive()  # type: ignore[attr-defined]
-        logging.debug("unsubscribeReceive() called")
-    except Exception as exc:
-        logging.warning(f"unsubscribeReceive failed: {exc}")
-
-
-def is_connected() -> bool:
-    """Check if DBus connection is active."""
-    return _dbus_connected
-
-
-def probe() -> None:
-    """Liveness probe against signal-cli. Raises DBusException on failure.
-
-    version() lives on SignalControl in multi-account mode; in single-account
-    mode the root object implements org.asamk.Signal directly.
-    """
-    bus = get_bus_instance()
-    root = bus.get_object("org.asamk.Signal", "/org/asamk/Signal", introspect=False)
-    iface_name = "org.asamk.Signal" if _single_account_mode else "org.asamk.SignalControl"
-    dbus.Interface(root, iface_name).version()  # type: ignore[attr-defined]
-
-
-def get_interface() -> dbus.Interface:
-    """Get the signal-cli DBus interface."""
-    if _signal_interface is None:
-        raise RuntimeError("DBus interface not connected")
-    return _signal_interface
-
-
-def get_interface_for_account(account: str | None) -> dbus.Interface:
-    """Get DBus interface for a specific account number, or the default if None."""
-    if account is None:
-        return get_interface()
-    bus = get_bus_instance()
-    dbus_number = account.replace("+", "_")
-    path = f"/org/asamk/Signal/{dbus_number}"
-    obj = bus.get_object("org.asamk.Signal", path)
-    return dbus.Interface(obj, "org.asamk.Signal")
-
-
-def get_object_instance():  # -> dbus.ProxyObject
-    """Get the signal-cli DBus proxy object (needed for introspection)."""
-    if _signal_object is None:
-        raise RuntimeError("DBus object not connected")
-    return _signal_object
-
-
-def get_bus_instance() -> dbus.Bus:
-    """Get the DBus bus instance."""
-    if _bus is None:
-        raise RuntimeError("DBus bus not connected")
-    return _bus
+    def _broadcast(self, payload: dict) -> None:
+        """Broadcast a system message to all connected WebSocket clients."""
+        if not self._connected_clients:
+            return
+        msg = json.dumps(payload)
+        for ws in list(self._connected_clients):
+            try:
+                coro = ws.send_str(msg) if hasattr(ws, "send_str") else ws.send(msg)
+                task = asyncio.create_task(coro)
+                task.add_done_callback(_log_send_error)
+            except Exception:
+                logging.debug("Failed to broadcast to client (disconnected?)", exc_info=True)

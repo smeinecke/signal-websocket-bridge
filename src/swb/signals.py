@@ -27,14 +27,14 @@ def _path_to_account(path: str) -> str | None:
 
 
 def _log_send_error(future) -> None:
-    """Done-callback for run_coroutine_threadsafe - logs failed sends at DEBUG level."""
+    """Done-callback for send tasks - logs failed sends at DEBUG level."""
     try:
         future.result()
     except Exception as exc:
         logging.debug(f"Failed to send signal to client: {exc}")
 
 
-def serialize_signal(signal_name: str, args: tuple) -> dict:
+def serialize_signal(signal_name: str, args) -> dict:
     """Convert positional DBus signal args to named fields.
 
     Known signals get structured payloads; unknown signals fall back to {signal, args}.
@@ -73,35 +73,33 @@ def serialize_signal(signal_name: str, args: tuple) -> dict:
     return {"signal": signal_name, "args": native_args}
 
 
-def create_signal_handler(connected_clients: set, clients_lock: Any, loop: Any, event_buffer=None):
+def create_signal_handler(connected_clients: set, event_buffer=None):
     """Create a DBus signal handler that broadcasts to WebSocket clients.
 
-    If event_buffer (a collections.deque) is provided, each serialized event is
-    appended to it before broadcasting so new clients can replay missed events.
+    Runs on the event loop (dbus-fast dispatches messages in the main
+    coroutine context). If event_buffer (a collections.deque) is provided,
+    each serialized event is appended to it before broadcasting so new
+    clients can replay missed events.
     """
 
-    def handler(*args, **kwargs):
-        """Called from the GLib thread on every org.asamk.Signal emission."""
-        signal_name = kwargs.get("member", "unknown")
-        payload_dict = serialize_signal(signal_name, args)
+    def handler(msg: Any) -> None:
+        """Called for every org.asamk.Signal emission on the bus."""
+        payload_dict = serialize_signal(msg.member, msg.body or [])
 
-        account = _path_to_account(kwargs.get("path", ""))
+        account = _path_to_account(msg.path or "")
         if account:
             payload_dict["account"] = account
 
         payload_dict["event_id"] = str(uuid.uuid4())
         payload = json.dumps(payload_dict)
-        logging.debug(f"DBus signal [{signal_name}] account={account}: {payload}")
+        logging.debug(f"DBus signal [{msg.member}] account={account}: {payload}")
 
         if event_buffer is not None:
-            event_buffer.append(payload)  # deque.append is thread-safe in CPython
+            event_buffer.append(payload)
 
-        with clients_lock:
-            clients_snapshot = list(connected_clients)
-
-        for ws in clients_snapshot:
+        for ws in list(connected_clients):
             coro = ws.send_str(payload) if hasattr(ws, "send_str") else ws.send(payload)
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
-            future.add_done_callback(_log_send_error)
+            task = asyncio.create_task(coro)
+            task.add_done_callback(_log_send_error)
 
     return handler

@@ -1,506 +1,349 @@
-"""Tests for swb.dbus_client module."""
+"""Tests for swb.dbus_client.SignalClient (dbus-fast based)."""
 
-import threading
-import time
-from unittest.mock import MagicMock, patch
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-dbus = pytest.importorskip("dbus")
+from dbus_fast import Message, MessageType
+from dbus_fast import introspection as intr
+from dbus_fast.errors import DBusError
 
 from swb.config import Config
-from swb.dbus_client import (
-    _broadcast_to_clients,
-    _build_object_path,
-    connect_signal_interface,
-    get_bus,
-    handle_dbus_error,
-    is_connected,
-    setup_glib_loop,
-)
+from swb.dbus_client import SignalClient
+
+# ---------------------------------------------------------------------------
+# Fixtures / fakes
+# ---------------------------------------------------------------------------
+
+_ROOT_SINGLE_XML = """<node>
+  <interface name="org.asamk.Signal">
+    <method name="version"><arg direction="out" type="s"/></method>
+    <signal name="MessageReceived"><arg type="x"/><arg type="s"/><arg type="ay"/><arg type="s"/><arg type="as"/></signal>
+  </interface>
+</node>"""
+
+_ROOT_MULTI_XML = """<node>
+  <interface name="org.asamk.SignalControl">
+    <method name="listAccounts"><arg direction="out" type="ao"/></method>
+    <method name="version"><arg direction="out" type="s"/></method>
+  </interface>
+</node>"""
 
 
-class TestBuildObjectPath:
-    """Test object path building."""
-
-    def test_default_path(self):
-        """Test default path without account."""
-        config = Config(bus="system", host="localhost", port=8765, token=None, account=None, log_level="INFO", buffer_size=0)
-        assert _build_object_path(config) == "/org/asamk/Signal"
-
-    def test_path_with_account(self):
-        """Test path with phone number account."""
-        config = Config(
-            bus="system",
-            host="localhost",
-            port=8765,
-            token=None,
-            account="+491234567890",
-            log_level="INFO",
-            buffer_size=0,
-        )
-        assert _build_object_path(config) == "/org/asamk/Signal/_491234567890"
-
-    def test_path_preserves_other_chars(self):
-        """Test that only + is replaced."""
-        config = Config(
-            bus="system",
-            host="localhost",
-            port=8765,
-            token=None,
-            account="+1-555-123-4567",
-            log_level="INFO",
-            buffer_size=0,
-        )
-        assert _build_object_path(config) == "/org/asamk/Signal/_1-555-123-4567"
+def make_node(xml: str):
+    return intr.Node.parse(xml)
 
 
-class TestGetBus:
-    """Test DBus bus selection."""
-
-    def test_system_bus(self):
-        """Test system bus selection."""
-        config = Config(bus="system", host="localhost", port=8765, token=None, account=None, log_level="INFO", buffer_size=0)
-
-        with patch("swb.dbus_client.dbus.SystemBus") as mock_system:
-            with patch("swb.dbus_client.dbus.SessionBus") as mock_session:
-                get_bus(config)
-                mock_system.assert_called_once()
-                mock_session.assert_not_called()
-
-    def test_session_bus(self):
-        """Test session bus selection."""
-        config = Config(bus="session", host="localhost", port=8765, token=None, account=None, log_level="INFO", buffer_size=0)
-
-        with patch("swb.dbus_client.dbus.SystemBus") as mock_system:
-            with patch("swb.dbus_client.dbus.SessionBus") as mock_session:
-                get_bus(config)
-                mock_system.assert_not_called()
-                mock_session.assert_called_once()
+@pytest.fixture
+def config():
+    return Config(bus="session", host="localhost", port=9999, token=None, account=None, log_level="INFO", buffer_size=0)
 
 
-class TestConnectSignalInterface:
-    """Test DBus connection."""
+@pytest.fixture
+def clients():
+    return set()
 
-    @pytest.fixture
-    def mock_config(self):
-        return Config(
-            bus="system",
-            host="localhost",
-            port=8765,
-            token=None,
-            account=None,
-            log_level="INFO",
-            buffer_size=0,
-        )
 
-    @pytest.fixture
-    def mock_loop(self):
-        return MagicMock()
+@pytest.fixture
+def signal_handler():
+    return MagicMock()
 
-    @pytest.fixture
-    def mock_signal_handler(self):
-        return MagicMock()
 
-    def test_successful_connection(self, mock_config, mock_loop, mock_signal_handler):
-        """Test successful connection to signal-cli."""
-        mock_bus = MagicMock()
-        mock_object = MagicMock()
-        mock_interface = MagicMock()
+@pytest.fixture
+def client(config, signal_handler, clients):
+    return SignalClient(config, signal_handler, clients)
 
-        mock_bus.get_object.return_value = mock_object
-        mock_interface.version.return_value = "0.12.0"
-        # Empty list → _autodiscover_object_path returns root path →
-        # per-account listAccounts() verification is skipped.
-        mock_interface.listAccounts.return_value = []
 
-        connected_clients = set()
-        clients_lock = threading.Lock()
+def make_bus(nodes: dict[str, intr.Node], method_replies: dict[tuple[str, str], list] | None = None):
+    """Fake MessageBus.
 
-        with patch("swb.dbus_client.get_bus", return_value=mock_bus):
-            with patch("swb.dbus_client.dbus.Interface", return_value=mock_interface):
-                result = connect_signal_interface(
-                    mock_config,
-                    mock_loop,
-                    mock_signal_handler,
-                    connected_clients,
-                    clients_lock,
-                )
+    introspect(name, path) -> nodes[path]
+    call(msg) -> dispatches on msg.member via method_replies {(path, member): body}
+    """
+    bus = MagicMock()
+    bus.connect = AsyncMock()
+    method_replies = method_replies or {}
 
-        assert result is True
-        mock_interface.listAccounts.assert_called()  # Verify mode detection probe
+    async def introspect(name, path):
+        return nodes[path]
 
-    def test_connection_failure(self, mock_config, mock_loop, mock_signal_handler):
-        """Test connection failure handling."""
-        connected_clients = set()
-        clients_lock = threading.Lock()
+    bus.introspect = AsyncMock(side_effect=introspect)
 
-        with patch("swb.dbus_client.get_bus", side_effect=Exception("DBus error")):
-            result = connect_signal_interface(
-                mock_config,
-                mock_loop,
-                mock_signal_handler,
-                connected_clients,
-                clients_lock,
-            )
+    bus.calls = []  # (member, path, interface, signature, body) log
+
+    async def call(msg: Message):
+        msg.serial = 1
+        bus.calls.append((msg.member, msg.path, msg.interface, msg.signature, msg.body))
+        if msg.member == "AddMatch":
+            return Message.new_method_return(msg, signature="", body=[])
+        body = method_replies.get((msg.path, msg.member), [])
+        if isinstance(body, Exception):
+            raise body
+        return Message.new_method_return(msg, signature="", body=body)
+
+    bus.call = AsyncMock(side_effect=call)
+    bus.add_message_handler = MagicMock()
+    bus.disconnect = MagicMock()
+
+    disconnected = asyncio.Event()
+    bus.wait_for_disconnect = AsyncMock(side_effect=disconnected.wait)
+    bus._disconnect_event = disconnected
+
+    return bus
+
+
+async def connected_client(client, method_replies=None, multi=False):
+    """Connect a client with the standard single/multi-account fake bus."""
+    replies = method_replies or {}
+    if multi:
+        nodes = {"/org/asamk/Signal": make_node(_ROOT_MULTI_XML)}
+    else:
+        nodes = {"/org/asamk/Signal": make_node(_ROOT_SINGLE_XML)}
+        replies.setdefault(("/org/asamk/Signal", "version"), ["1.0"])
+    bus = make_bus(nodes, replies)
+    with patch("swb.dbus_client.MessageBus", return_value=bus):
+        await client.connect()
+    return bus
+
+
+# ---------------------------------------------------------------------------
+# Connect
+# ---------------------------------------------------------------------------
+
+
+class TestConnect:
+    async def test_connect_single_account(self, client):
+        """Single-account mode when SignalControl interface is absent."""
+        bus = await connected_client(client)
+
+        assert client.connected is True
+        assert client.single_account_mode is True
+        assert any(c[0] == "version" for c in bus.calls)  # liveness probe
+        assert bus.add_message_handler.called
+
+    async def test_connect_multi_account_autodiscover(self, client):
+        """Multi-account mode auto-discovers the exported account path."""
+        account_path = "/org/asamk/Signal/_491234567890"
+        nodes = {"/org/asamk/Signal": make_node(_ROOT_MULTI_XML), account_path: make_node(_ROOT_SINGLE_XML)}
+        bus = make_bus(nodes, {("/org/asamk/Signal", "listAccounts"): [[account_path]]})
+
+        with patch("swb.dbus_client.MessageBus", return_value=bus):
+            assert await client.connect() is True
+
+        assert client.single_account_mode is False
+        assert client._object_path == account_path
+
+    async def test_connect_explicit_account(self, clients):
+        """Explicit SIGNAL_ACCOUNT selects that account path."""
+        config = Config(bus="session", host="localhost", port=9999, token=None, account="+491234567890", log_level="INFO", buffer_size=0)
+        client = SignalClient(config, MagicMock(), clients)
+
+        account_path = "/org/asamk/Signal/_491234567890"
+        nodes = {"/org/asamk/Signal": make_node(_ROOT_MULTI_XML), account_path: make_node(_ROOT_SINGLE_XML)}
+        bus = make_bus(nodes, {("/org/asamk/Signal", "listAccounts"): [[account_path]]})
+
+        with patch("swb.dbus_client.MessageBus", return_value=bus):
+            assert await client.connect() is True
+        assert client._object_path == account_path
+
+    async def test_connect_unexported_account_fails(self, clients):
+        """Explicit account not in listAccounts -> connect fails."""
+        config = Config(bus="session", host="localhost", port=9999, token=None, account="+491111111111", log_level="INFO", buffer_size=0)
+        client = SignalClient(config, MagicMock(), clients)
+
+        account_path = "/org/asamk/Signal/_491234567890"
+        nodes = {"/org/asamk/Signal": make_node(_ROOT_MULTI_XML)}
+        bus = make_bus(nodes, {("/org/asamk/Signal", "listAccounts"): [[account_path]]})
+
+        with patch("swb.dbus_client.MessageBus", return_value=bus):
+            assert await client.connect() is False
+
+    async def test_connect_fails_gracefully(self, client):
+        """Bus connection failure returns False, no exception."""
+        bus = MagicMock()
+        bus.connect = AsyncMock(side_effect=OSError("no bus"))
+
+        with patch("swb.dbus_client.MessageBus", return_value=bus):
+            result = await client.connect()
 
         assert result is False
+        assert client.connected is False
+
+    async def test_connect_registers_add_match(self, client):
+        """Signal routing match rules are registered with the daemon."""
+        bus = await connected_client(client)
+
+        rules = [c[4][0] for c in bus.calls if c[0] == "AddMatch"]
+        assert any("interface='org.asamk.Signal'" in r for r in rules)
+        assert any("NameOwnerChanged" in r for r in rules)
+
+
+# ---------------------------------------------------------------------------
+# Message handling / outage detection
+# ---------------------------------------------------------------------------
+
+
+class TestMessageHandling:
+    async def test_signal_dispatched_to_handler(self, client):
+        await connected_client(client)
+
+        msg = SimpleNamespace(
+            message_type=MessageType.SIGNAL,
+            interface="org.asamk.Signal",
+            member="MessageReceived",
+            body=[1, "+1", b"", "hi", []],
+            path="/org/asamk/Signal",
+        )
+        client._handle_message(msg)
+
+        client._signal_handler.assert_called_once_with(msg)
+
+    async def test_non_signal_ignored(self, client):
+        await connected_client(client)
+
+        msg = SimpleNamespace(message_type=MessageType.METHOD_RETURN, interface="x", member="y", body=[], path="/")
+        assert client._handle_message(msg) is None
+        client._signal_handler.assert_not_called()
+
+    async def test_name_owner_changed_vanish_disconnects(self, client, clients):
+        ws = AsyncMock()
+        clients.add(ws)
+        await connected_client(client)
+
+        msg = SimpleNamespace(
+            message_type=MessageType.SIGNAL,
+            interface="org.freedesktop.DBus",
+            member="NameOwnerChanged",
+            body=["org.asamk.Signal", ":1.23", ""],  # empty new owner -> vanished
+            path="/org/freedesktop/DBus",
+        )
+        client._handle_message(msg)
+
+        assert client.connected is False
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        payload = ws.send_str.call_args.args[0]
+        assert '"Disconnected"' in payload
+
+    async def test_name_owner_changed_reappears_wakes_reconnect(self, client):
+        await connected_client(client)
+
+        client.connected = False
+        client._on_name_owner_changed(["org.asamk.Signal", "", ":1.99"])
+
+        assert client._reconnect_wake.is_set()
+
+    async def test_unrelated_name_ignored(self, client):
+        await connected_client(client)
 
+        client._on_name_owner_changed(["org.other.Service", ":1.0", ""])
+        assert client.connected is True
 
-class TestHandleDbusError:
-    """Test DBus error handling."""
 
-    def test_non_dbus_exception(self):
-        """Test non-DBus exceptions are re-raised."""
-        exc = ValueError("Not a DBus error")
+class TestNoteError:
+    async def test_connection_error_marks_lost(self, client):
+        client.connected = True
+        client.note_error(DBusError("org.freedesktop.DBus.Error.ServiceUnknown", "gone"))
+        assert client.connected is False
 
-        with pytest.raises(ValueError):
-            handle_dbus_error(exc)
+    async def test_app_error_does_not_disconnect(self, client):
+        client.connected = True
+        client.note_error(DBusError("org.freedesktop.DBus.Error.InvalidArgs", "bad"))
+        assert client.connected is True
 
-    def test_non_connection_dbus_error(self):
-        """Test non-connection DBus errors are re-raised."""
-        exc = MagicMock()
-        exc.get_dbus_name.return_value = "org.freedesktop.DBus.Error.InvalidArgs"
+    async def test_transport_error_marks_lost(self, client):
+        client.connected = True
+        client.note_error(BrokenPipeError("closed"))
+        assert client.connected is False
 
-        with patch("swb.dbus_client.dbus.exceptions.DBusException", type(exc)):
-            with pytest.raises(Exception):
-                handle_dbus_error(exc)
+    async def test_unknown_error_ignored(self, client):
+        client.connected = True
+        client.note_error(RuntimeError("weird"))
+        assert client.connected is True
 
 
-class TestBroadcastToClients:
-    """Test broadcasting to clients."""
+class TestInterface:
+    async def test_interface_default(self, client):
+        await connected_client(client)
+        iface = client.interface(None)
+        assert iface._path == "/org/asamk/Signal"
+        assert iface._iface == "org.asamk.Signal"
 
-    def test_no_clients(self):
-        """Test broadcast with no clients doesn't fail."""
-        clients = set()
-        # Should not raise
-        _broadcast_to_clients({"signal": "test"})
+    async def test_interface_per_account_cached(self, clients):
+        config = Config(bus="session", host="localhost", port=9999, token=None, account=None, log_level="INFO", buffer_size=0)
+        client = SignalClient(config, MagicMock(), clients)
 
+        account_path = "/org/asamk/Signal/_491234567890"
+        nodes = {"/org/asamk/Signal": make_node(_ROOT_MULTI_XML), account_path: make_node(_ROOT_SINGLE_XML)}
+        bus = make_bus(nodes, {("/org/asamk/Signal", "listAccounts"): [[account_path]]})
+        with patch("swb.dbus_client.MessageBus", return_value=bus):
+            await client.connect()
 
-class TestIsConnected:
-    """Test connection status."""
-
-    def test_initial_state(self):
-        """Test initial disconnected state."""
-        # Note: This tests the global state, which may be affected by other tests
-        # Reset state for clean test
-        from swb.dbus_client import _dbus_connected
-
-        assert is_connected() == _dbus_connected
-
-
-class TestProbe:
-    """Test liveness probe interface selection per account mode."""
-
-    def _run_probe(self, single_account_mode: bool) -> MagicMock:
-        import swb.dbus_client as dc
-
-        mock_bus = MagicMock()
-        mock_obj = MagicMock()
-        mock_iface = MagicMock()
-        mock_bus.get_object.return_value = mock_obj
-
-        original = dc._single_account_mode
-        dc._single_account_mode = single_account_mode
-        try:
-            with patch("swb.dbus_client.get_bus_instance", return_value=mock_bus):
-                with patch("swb.dbus_client.dbus.Interface", return_value=mock_iface) as mock_iface_cls:
-                    dc.probe()
-        finally:
-            dc._single_account_mode = original
-
-        return mock_iface_cls
-
-    def test_probe_single_account_uses_signal_interface(self):
-        """Single-account mode: version() is on org.asamk.Signal."""
-        mock_iface_cls = self._run_probe(single_account_mode=True)
-        iface_name = mock_iface_cls.call_args.args[1]
-        assert iface_name == "org.asamk.Signal"
+        assert client.interface(None)._path == account_path
+        other = client.interface("+499876543210")
+        assert other._path == "/org/asamk/Signal/_499876543210"
+        # Second lookup hits the cache
+        assert client.interface("+499876543210") is other
 
-    def test_probe_multi_account_uses_signal_control(self):
-        """Multi-account mode: version() is on org.asamk.SignalControl."""
-        mock_iface_cls = self._run_probe(single_account_mode=False)
-        iface_name = mock_iface_cls.call_args.args[1]
-        assert iface_name == "org.asamk.SignalControl"
-
-
-class TestNameOwnerChanged:
-    """Test fast outage detection via org.freedesktop.DBus.NameOwnerChanged."""
-
-    def test_vanish_marks_disconnected_and_starts_reconnect(self):
-        """org.asamk.Signal losing its owner triggers the disconnect path."""
-        import swb.dbus_client as dc
-
-        original_connected = dc._dbus_connected
-        original_thread = dc._reconnect_thread
-        try:
-            dc._dbus_connected = True
-            dc._reconnect_thread = None
+    def test_interface_not_connected_raises(self, client):
+        with pytest.raises(RuntimeError):
+            client.interface(None)
 
-            dc._on_name_owner_changed("org.asamk.Signal", ":1.10", "")
 
-            assert dc._dbus_connected is False
-            assert dc._reconnect_thread is not None
-        finally:
-            dc._dbus_connected = original_connected
-            dc._reconnect_thread = original_thread
+class TestBroadcast:
+    async def test_broadcast_to_clients(self, client, clients):
+        ws = AsyncMock()
+        clients.add(ws)
+        client._broadcast({"signal": "Disconnected"})
 
-    def test_other_names_are_ignored(self):
-        """NameOwnerChanged for unrelated names is a no-op."""
-        import swb.dbus_client as dc
-
-        original_connected = dc._dbus_connected
-        try:
-            dc._dbus_connected = True
-            dc._on_name_owner_changed("org.other.Service", ":1.10", "")
-            assert dc._dbus_connected is True
-        finally:
-            dc._dbus_connected = original_connected
-
-    def test_reappear_wakes_reconnect_loop(self):
-        """org.asamk.Signal re-registering wakes the sleeping reconnect loop."""
-        import swb.dbus_client as dc
-
-        original_connected = dc._dbus_connected
-        dc._reconnect_wake.clear()
-        try:
-            dc._dbus_connected = False
-            dc._on_name_owner_changed("org.asamk.Signal", "", ":1.11")
-            assert dc._reconnect_wake.is_set()
-        finally:
-            dc._dbus_connected = original_connected
-            dc._reconnect_wake.clear()
-
-    def test_reappear_while_connected_is_noop(self):
-        """A new owner while connected must not mark anything or wake the loop."""
-        import swb.dbus_client as dc
-
-        original_connected = dc._dbus_connected
-        dc._reconnect_wake.clear()
-        try:
-            dc._dbus_connected = True
-            dc._on_name_owner_changed("org.asamk.Signal", ":1.10", ":1.11")
-            assert dc._dbus_connected is True
-            assert not dc._reconnect_wake.is_set()
-        finally:
-            dc._dbus_connected = original_connected
-            dc._reconnect_wake.clear()
-
-
-class TestSetupGlibLoop:
-    """Test GLib loop setup."""
-
-    def test_setup(self):
-        """Test GLib main loop setup."""
-        with patch("swb.dbus_client.dbus.mainloop.glib.DBusGMainLoop") as mock_loop:
-            setup_glib_loop()
-            mock_loop.assert_called_once_with(set_as_default=True)
-
-
-class TestGetInterface:
-    """Test get_interface function."""
-
-    def test_get_interface_raises_when_not_connected(self):
-        """Test get_interface raises when not connected."""
-        # Reset global state
-        import swb.dbus_client as dc
-        from swb.dbus_client import _signal_interface, get_interface
-
-        original = dc._signal_interface
-        dc._signal_interface = None
-
-        try:
-            with pytest.raises(RuntimeError, match="DBus interface not connected"):
-                get_interface()
-        finally:
-            dc._signal_interface = original
-
-
-class TestGetObjectInstance:
-    """Test get_object_instance function."""
-
-    def test_get_object_instance_raises_when_not_connected(self):
-        """Test get_object_instance raises when not connected."""
-        # Reset global state
-        import swb.dbus_client as dc
-        from swb.dbus_client import _signal_object, get_object_instance
-
-        original = dc._signal_object
-        dc._signal_object = None
-
-        try:
-            with pytest.raises(RuntimeError, match="DBus object not connected"):
-                get_object_instance()
-        finally:
-            dc._signal_object = original
-
-
-class TestGetBusInstance:
-    """Test get_bus_instance function."""
-
-    def test_get_bus_instance_raises_when_not_connected(self):
-        """Test get_bus_instance raises when not connected."""
-        # Reset global state
-        import swb.dbus_client as dc
-        from swb.dbus_client import _bus, get_bus_instance
-
-        original = dc._bus
-        dc._bus = None
-
-        try:
-            with pytest.raises(RuntimeError, match="DBus bus not connected"):
-                get_bus_instance()
-        finally:
-            dc._bus = original
-
-
-class TestBroadcastToClientsExtended:
-    """Extended broadcast tests."""
-
-    def test_broadcast_with_clients(self):
-        """Test broadcast with connected clients."""
-        import asyncio
-        from unittest.mock import AsyncMock
-
-        # Save original state
-        import swb.dbus_client as dc
-        from swb.dbus_client import _broadcast_to_clients, _clients_lock, _connected_clients, _loop
-
-        original_clients = dc._connected_clients
-        original_lock = dc._clients_lock
-        original_loop = dc._loop
-
-        try:
-            # Set up test state
-            dc._connected_clients = set()
-            dc._clients_lock = MagicMock()
-            dc._clients_lock.__enter__ = MagicMock(return_value=None)
-            dc._clients_lock.__exit__ = MagicMock(return_value=None)
-            dc._loop = MagicMock()
-
-            # Add mock client
-            mock_ws = AsyncMock()
-            mock_ws.send_str = AsyncMock()
-            dc._connected_clients.add(mock_ws)
-
-            _broadcast_to_clients({"signal": "test"})
-
-            # Verify loop was called to schedule send
-            dc._loop.call_soon_threadsafe.assert_called()
-        finally:
-            dc._connected_clients = original_clients
-            dc._clients_lock = original_lock
-            dc._loop = original_loop
-
-    def test_broadcast_with_send_method(self):
-        """Test broadcast to client with send method."""
-        from unittest.mock import AsyncMock
-
-        # Save original state
-        import swb.dbus_client as dc
-        from swb.dbus_client import _broadcast_to_clients
-
-        original_clients = dc._connected_clients
-        original_lock = dc._clients_lock
-        original_loop = dc._loop
-
-        try:
-            dc._connected_clients = set()
-            dc._clients_lock = MagicMock()
-            dc._clients_lock.__enter__ = MagicMock(return_value=None)
-            dc._clients_lock.__exit__ = MagicMock(return_value=None)
-            dc._loop = MagicMock()
-
-            # Add mock client without send_str (uses send)
-            mock_ws = AsyncMock()
-            del mock_ws.send_str
-            mock_ws.send = AsyncMock()
-            dc._connected_clients.add(mock_ws)
-
-            _broadcast_to_clients({"signal": "test"})
-
-            dc._loop.call_soon_threadsafe.assert_called()
-        finally:
-            dc._connected_clients = original_clients
-            dc._clients_lock = original_lock
-            dc._loop = original_loop
-
-
-class TestHandleDbusErrorExtended:
-    """Extended DBus error handling tests."""
-
-    def test_connection_error_triggers_reconnect(self):
-        """Test connection error triggers reconnect."""
-        import threading
-
-        # Save original state
-        import swb.dbus_client as dc
-        from swb.dbus_client import _dbus_connected, _reconnect_thread, handle_dbus_error
-
-        original_connected = dc._dbus_connected
-        original_thread = dc._reconnect_thread
-
-        try:
-            dc._dbus_connected = True
-            dc._reconnect_thread = None
-
-            # Create mock DBus exception
-            mock_exc = MagicMock()
-            mock_exc.get_dbus_name.return_value = "org.freedesktop.DBus.Error.ServiceUnknown"
-
-            with patch("swb.dbus_client.dbus.exceptions.DBusException", type(mock_exc)):
-                with pytest.raises(Exception):
-                    handle_dbus_error(mock_exc)
-
-            # Verify disconnected state
-            assert dc._dbus_connected is False
-        finally:
-            dc._dbus_connected = original_connected
-            dc._reconnect_thread = original_thread
-
-    def test_non_connection_error_raised_immediately(self):
-        """Test non-connection errors are raised immediately."""
-        from swb.dbus_client import handle_dbus_error
-
-        # Create mock DBus exception for non-connection error
-        mock_exc = MagicMock()
-        mock_exc.get_dbus_name.return_value = "org.freedesktop.DBus.Error.InvalidArgs"
-
-        with patch("swb.dbus_client.dbus.exceptions.DBusException", type(mock_exc)):
-            with pytest.raises(Exception):
-                handle_dbus_error(mock_exc)
-
-
-class TestBroadcastExceptions:
-    """Test broadcast exception handling."""
-
-    def test_broadcast_exception_during_send(self):
-        """Test broadcast handles exception during send."""
-        from unittest.mock import AsyncMock
-
-        # Save original state
-        import swb.dbus_client as dc
-        from swb.dbus_client import _broadcast_to_clients
-
-        original_clients = dc._connected_clients
-        original_lock = dc._clients_lock
-        original_loop = dc._loop
-
-        try:
-            dc._connected_clients = set()
-            dc._clients_lock = MagicMock()
-            dc._clients_lock.__enter__ = MagicMock(return_value=None)
-            dc._clients_lock.__exit__ = MagicMock(return_value=None)
-            dc._loop = MagicMock()
-
-            # Add mock client that raises exception during send
-            mock_ws = AsyncMock()
-            mock_ws.send_str = AsyncMock(side_effect=Exception("Connection closed"))
-            dc._connected_clients.add(mock_ws)
-
-            # Should not raise
-            _broadcast_to_clients({"signal": "test"})
-        finally:
-            dc._connected_clients = original_clients
-            dc._clients_lock = original_lock
-            dc._loop = original_loop
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        ws.send_str.assert_called_once()
+        assert '"Disconnected"' in ws.send_str.call_args.args[0]
+
+    def test_broadcast_no_clients(self, client):
+        client._broadcast({"signal": "Disconnected"})  # must not raise
+
+
+class TestReconnect:
+    async def test_reconnect_broadcasts_reconnected(self, client, clients):
+        """After a successful non-initial connect, clients get Reconnected."""
+        ws = AsyncMock()
+        clients.add(ws)
+
+        bus = await connected_client(client)
+        client._initial_connect = False
+        with patch("swb.dbus_client.MessageBus", return_value=bus):
+            await client.connect()
+
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        payloads = [c.args[0] for c in ws.send_str.call_args_list]
+        assert any('"Reconnected"' in p for p in payloads)
+
+    async def test_subscribe_resubscribes_after_reconnect(self, client, clients):
+        ws = AsyncMock()
+        clients.add(ws)
+
+        bus = await connected_client(client)
+        client._initial_connect = False
+        with patch("swb.dbus_client.MessageBus", return_value=bus):
+            await client.connect()
+
+        assert any(c[0] == "subscribeReceive" for c in bus.calls)
+
+
+class TestWatchTransport:
+    async def test_bus_disconnect_triggers_loss(self, client, clients):
+        ws = AsyncMock()
+        clients.add(ws)
+
+        bus = await connected_client(client)
+
+        # Simulate transport death
+        bus._disconnect_event.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert client.connected is False

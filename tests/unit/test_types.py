@@ -1,12 +1,9 @@
 """Tests for swb.types module."""
 
 import base64
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
-
-dbus = pytest.importorskip("dbus")
+from dbus_fast import Variant
 
 from swb.types import (
     dbus_signature_to_json_schema,
@@ -14,6 +11,7 @@ from swb.types import (
     to_bytes,
     to_int64,
     to_int64_array,
+    to_string_array,
     validate_attachments,
 )
 
@@ -21,94 +19,105 @@ from swb.types import (
 class TestDbusToNative:
     """Test DBus to native Python conversion."""
 
-    def test_string(self):
-        """Test dbus.String conversion."""
-        result = dbus_to_native(dbus.String("hello"))
+    def test_string_passthrough(self):
+        result = dbus_to_native("hello")
         assert result == "hello"
         assert isinstance(result, str)
 
     def test_int64(self):
-        """Test dbus.Int64 conversion."""
-        result = dbus_to_native(dbus.Int64(1234567890123))
+        result = dbus_to_native(1234567890123)
         assert result == 1234567890123
         assert isinstance(result, int)
 
     def test_int32(self):
-        """Test dbus.Int32 conversion."""
-        result = dbus_to_native(dbus.Int32(42))
+        result = dbus_to_native(42)
         assert result == 42
         assert isinstance(result, int)
 
     def test_boolean(self):
-        """Test dbus.Boolean conversion."""
-        result = dbus_to_native(dbus.Boolean(True))
+        result = dbus_to_native(True)
         assert result is True
         assert isinstance(result, bool)
 
     def test_byte(self):
-        """Test dbus.Byte conversion."""
-        result = dbus_to_native(dbus.Byte(255))
+        result = dbus_to_native(255)
         assert result == 255
         assert isinstance(result, int)
 
     def test_byte_array_to_base64(self):
-        """Test byte array (ay) conversion to base64."""
-        byte_array = dbus.Array([dbus.Byte(b) for b in b"hello"], signature="y")
-        result = dbus_to_native(byte_array)
+        """ay arrives as bytes from dbus-fast -> base64 string."""
+        result = dbus_to_native(b"hello")
         assert result == base64.b64encode(b"hello").decode()
 
+    def test_bytearray_to_base64(self):
+        result = dbus_to_native(bytearray(b"hi"))
+        assert result == base64.b64encode(b"hi").decode()
+
+    def test_empty_byte_array(self):
+        result = dbus_to_native(b"")
+        assert result == ""
+
+    def test_variant_unwrapped(self):
+        result = dbus_to_native(Variant("s", "wrapped"))
+        assert result == "wrapped"
+
+    def test_variant_byte_array(self):
+        result = dbus_to_native(Variant("ay", b"data"))
+        assert result == base64.b64encode(b"data").decode()
+
     def test_string_array(self):
-        """Test string array conversion."""
-        arr = dbus.Array([dbus.String("a"), dbus.String("b")], signature="s")
-        result = dbus_to_native(arr)
+        result = dbus_to_native(["a", "b"])
         assert result == ["a", "b"]
 
-    def test_struct(self):
-        """Test struct conversion."""
-        struct = dbus.Struct([dbus.String("test"), dbus.Int64(123)])
-        result = dbus_to_native(struct)
+    def test_struct_as_list(self):
+        result = dbus_to_native(("test", 123))
         assert result == ["test", 123]
 
     def test_dictionary(self):
-        """Test dictionary conversion."""
-        d = dbus.Dictionary({dbus.String("key"): dbus.String("value")})
-        result = dbus_to_native(d)
+        result = dbus_to_native({"key": "value"})
         assert result == {"key": "value"}
+
+    def test_nested_containers(self):
+        result = dbus_to_native({"items": [b"\x01", ["a"]]})
+        assert result == {"items": [base64.b64encode(b"\x01").decode(), ["a"]]}
 
 
 class TestToBytes:
     """Test base64 to bytes conversion."""
 
     def test_base64_to_bytes(self):
-        """Test base64 string to dbus byte array."""
         original = b"test data"
         b64 = base64.b64encode(original).decode()
         result = to_bytes(b64)
 
-        assert isinstance(result, dbus.Array)
-        assert result.signature == "y"
-        assert bytes(int(b) for b in result) == original
+        assert result == original
+        assert isinstance(result, bytes)
 
 
 class TestToInt64:
     """Test int64 conversion."""
 
     def test_int_to_int64(self):
-        """Test integer to dbus.Int64."""
         result = to_int64(1234567890123)
-        assert isinstance(result, dbus.Int64)
-        assert int(result) == 1234567890123
+        assert result == 1234567890123
+        assert isinstance(result, int)
 
 
 class TestToInt64Array:
     """Test int64 array conversion."""
 
     def test_list_to_int64_array(self):
-        """Test list of integers to dbus int64 array."""
         result = to_int64_array([1, 2, 3])
-        assert isinstance(result, dbus.Array)
-        assert result.signature == "x"
-        assert [int(x) for x in result] == [1, 2, 3]
+        assert result == [1, 2, 3]
+        assert all(isinstance(x, int) for x in result)
+
+
+class TestToStringArray:
+    """Test string array conversion."""
+
+    def test_list(self):
+        assert to_string_array(["a", "b"]) == ["a", "b"]
+        assert to_string_array([]) == []
 
 
 class TestValidateAttachments:
@@ -186,8 +195,7 @@ class TestDbusSignatureToJsonSchema:
     def test_object_path_signature(self):
         """Test 'o' signature."""
         result = dbus_signature_to_json_schema("o")
-        assert result["type"] == "string"
-        assert result["format"] == "uri"
+        assert result == {"type": "string", "format": "uri"}
 
     def test_unknown_signature(self):
         """Test unknown signature defaults to object."""
@@ -203,15 +211,3 @@ class TestDbusSignatureToJsonSchema:
         """Test array of structs signature."""
         result = dbus_signature_to_json_schema("a(ss)")
         assert result == {"type": "array", "items": {"type": "array", "items": {}}}
-
-    def test_dbus_to_native_uint32(self):
-        """Test dbus.UInt32 conversion."""
-        result = dbus_to_native(dbus.UInt32(42))
-        assert result == 42
-        assert isinstance(result, int)
-
-    def test_dbus_to_native_uint64(self):
-        """Test dbus.UInt64 conversion."""
-        result = dbus_to_native(dbus.UInt64(1234567890123))
-        assert result == 1234567890123
-        assert isinstance(result, int)
