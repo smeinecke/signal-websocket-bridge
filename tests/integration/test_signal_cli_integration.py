@@ -13,6 +13,8 @@ import asyncio
 import json
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -39,6 +41,39 @@ async def ws_recv_json(ws, timeout: float = 5) -> dict:
     """Receive one text frame and decode it as JSON."""
     msg = await asyncio.wait_for(ws.receive(), timeout=timeout)
     return json.loads(msg.data)
+
+
+async def ws_wait_for_signal(ws, signal_name: str, timeout: float) -> dict:
+    """Read incoming messages until one carries {"signal": signal_name}."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError(f"did not receive signal {signal_name!r} within {timeout}s")
+        msg = await ws_recv_json(ws, timeout=remaining)
+        if msg.get("signal") == signal_name:
+            return msg
+
+
+def _emit_signal(container: str, member: str, *args: str) -> None:
+    """Emit a signal on the container's session bus via dbus-send."""
+    subprocess.run(
+        [
+            "docker",
+            "exec",
+            container,
+            "dbus-send",
+            "--bus=unix:path=/tmp/dbus-session.socket",
+            "--type=signal",
+            "/org/asamk/Signal",
+            f"org.asamk.Signal.{member}",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -341,6 +376,103 @@ class TestSignalCliIntegration:
         assert "UnknownObject" not in error, f"listGroups returned UnknownObject - bridge _signal_interface points to a non-existent DBus path: {error}"
         assert "result" in response or "error" in response
 
+    @pytest.mark.asyncio
+    async def test_websocket_non_object_json(self, docker_container):
+        """A JSON array message is rejected without killing the connection."""
+        async with ws_connect(WS_URL) as ws:
+            await ws.send_str(json.dumps({"auth": TEST_TOKEN}))
+            assert (await ws_recv_json(ws)).get("auth") == "ok"
+
+            await ws.send_str("[1, 2, 3]")
+            response = await ws_recv_json(ws)
+            assert response.get("error") == "expected JSON object"
+
+            # Connection stays usable after the malformed message
+            await ws.send_str(json.dumps({"id": 4, "method": "version", "params": {}}))
+            response = await ws_recv_json(ws)
+            assert response.get("id") == 4
+            assert "result" in response
+
+    @pytest.mark.asyncio
+    async def test_websocket_unknown_method(self, docker_container):
+        """Unknown method names return a descriptive error."""
+        async with ws_connect(WS_URL) as ws:
+            await ws.send_str(json.dumps({"auth": TEST_TOKEN}))
+            assert (await ws_recv_json(ws)).get("auth") == "ok"
+
+            await ws.send_str(json.dumps({"id": 5, "method": "noSuchMethod", "params": {}}))
+            response = await ws_recv_json(ws)
+            assert response.get("id") == 5
+            assert "unknown method" in response.get("error", "")
+
+    def test_send_endpoint_version(self, docker_container):
+        """POST /send performs a synchronous dispatch with Bearer auth."""
+        req = urllib.request.Request(
+            f"http://localhost:{WEBSOCKET_PORT}/send",
+            data=json.dumps({"id": 3, "method": "version", "params": {}}).encode(),
+            headers={"Authorization": f"Bearer {TEST_TOKEN}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read())
+        assert data.get("id") == 3
+        assert "result" in data
+
+    def test_send_endpoint_unauthorized(self, docker_container):
+        """POST /send rejects invalid tokens with 401."""
+        req = urllib.request.Request(
+            f"http://localhost:{WEBSOCKET_PORT}/send",
+            data=b"{}",
+            headers={"Authorization": "Bearer wrong-token"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req, timeout=10)
+        assert exc_info.value.code == 401
+
+    @pytest.mark.asyncio
+    async def test_dbus_signal_broadcast_to_client(self, docker_container):
+        """A DBus signal on the bus is serialized and pushed to WS clients.
+
+        Baseline for the dbus library migration: the signal path
+        (receiver -> serialize_signal -> broadcast) must be preserved,
+        including ay -> base64 conversion for groupId.
+        """
+        async with ws_connect(WS_URL) as ws:
+            await ws.send_str(json.dumps({"auth": TEST_TOKEN}))
+            assert (await ws_recv_json(ws)).get("auth") == "ok"
+
+            _emit_signal(
+                docker_container,
+                "MessageReceived",
+                "int64:1234567890",
+                "string:+491234567890",
+                "array:byte:1,2,3",
+                "string:e2e test message",
+                "array:string:/tmp/a.txt",
+            )
+            msg = await ws_wait_for_signal(ws, "MessageReceived", timeout=10)
+
+        assert msg["timestamp"] == 1234567890
+        assert msg["sender"] == "+491234567890"
+        assert msg["groupId"] == "AQID"  # base64 of b"\\x01\\x02\\x03"
+        assert msg["message"] == "e2e test message"
+        assert msg["attachments"] == ["/tmp/a.txt"]
+        assert "event_id" in msg
+
+    @pytest.mark.asyncio
+    async def test_dbus_unknown_signal_fallback(self, docker_container):
+        """Unknown signals are broadcast in the generic {signal, args} format."""
+        async with ws_connect(WS_URL) as ws:
+            await ws.send_str(json.dumps({"auth": TEST_TOKEN}))
+            assert (await ws_recv_json(ws)).get("auth") == "ok"
+
+            _emit_signal(docker_container, "SomethingCustom", "string:hello", "int32:42")
+            msg = await ws_wait_for_signal(ws, "SomethingCustom", timeout=10)
+
+        assert msg["args"] == ["hello", 42]
+
     def test_bridge_process_running(self, docker_container):
         """Verify the WebSocket bridge process is running."""
         result = subprocess.run(
@@ -349,6 +481,62 @@ class TestSignalCliIntegration:
             text=True,
         )
         assert result.returncode == 0, "WebSocket bridge is not running"
+
+    @pytest.mark.asyncio
+    async def test_reconnect_after_signal_cli_restart(self, docker_container):
+        """Killing signal-cli triggers Disconnected/Reconnected broadcasts.
+
+        Baseline for the dbus library migration: supervisord autorestarts
+        signal-cli; the bridge must detect the outage, notify clients, and
+        recover on its own. Runs last since it disturbs the shared container.
+        """
+        async with ws_connect(WS_URL) as ws:
+            await ws.send_str(json.dumps({"auth": TEST_TOKEN}))
+            assert (await ws_recv_json(ws)).get("auth") == "ok"
+
+            subprocess.run(
+                ["docker", "exec", docker_container, "pkill", "-f", "signal-cli"],
+                capture_output=True,
+                check=True,
+                timeout=10,
+            )
+
+            # The bridge learns of the outage lazily: either via a failed call
+            # (ServiceUnknown is instant once the bus name vanishes) or via the
+            # 30s watchdog probe. Probe with version calls until detection is
+            # confirmed by an error response or the Disconnected broadcast.
+            saw_disconnected = False
+            for _ in range(5):
+                await ws.send_str(json.dumps({"id": 6, "method": "version", "params": {}}))
+                msg = await ws_recv_json(ws, timeout=20)
+                if msg.get("signal") == "Disconnected":
+                    saw_disconnected = True
+                    break
+                if "error" in msg:
+                    break  # reconnect path triggered; broadcast arrives next
+                await asyncio.sleep(2)
+            else:
+                pytest.fail("signal-cli outage was never detected")
+
+            if not saw_disconnected:
+                disconnected = await ws_wait_for_signal(ws, "Disconnected", timeout=30)
+                assert disconnected["signal"] == "Disconnected"
+
+            # Health endpoint reports the outage while disconnected
+            try:
+                urllib.request.urlopen(HEALTH_URL, timeout=5)
+            except urllib.error.HTTPError as exc:
+                assert exc.code == 503
+
+            # supervisord restarts signal-cli; the reconnect loop reattaches
+            reconnected = await ws_wait_for_signal(ws, "Reconnected", timeout=90)
+            assert reconnected["signal"] == "Reconnected"
+
+            # Dispatch works against the new connection
+            await ws.send_str(json.dumps({"id": 7, "method": "version", "params": {}}))
+            response = await ws_recv_json(ws, timeout=15)
+            assert response.get("id") == 7
+            assert "result" in response
 
 
 if __name__ == "__main__":
