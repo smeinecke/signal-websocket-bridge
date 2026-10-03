@@ -89,6 +89,9 @@ COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 EXPOSE 8765
 
 # Environment variables
+# SIGNAL_WS_TOKEN is an empty default only - the real token is injected at
+# runtime via `docker run -e` and never baked into the image.
+# check=skip=SecretsUsedInArgOrEnv
 ENV SIGNAL_WS_HOST=0.0.0.0 \
     SIGNAL_WS_PORT=8765 \
     SIGNAL_DBUS_BUS=session \
