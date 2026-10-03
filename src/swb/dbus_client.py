@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 from typing import Any, Callable
 
 import dbus
@@ -21,6 +20,7 @@ _reconnect_lock = threading.Lock()
 _reconnect_backoff = 1  # seconds, doubles up to 60s cap
 _dbus_connected = False
 _reconnect_thread: threading.Thread | None = None
+_reconnect_wake = threading.Event()  # set when org.asamk.Signal reappears on the bus
 _initial_connect = True  # distinguishes first connect from reconnect
 _single_account_mode = False  # set at connect time; drives probe() interface choice
 
@@ -107,6 +107,11 @@ def connect_signal_interface(
             if _bus is not None and signal_handler is not None:
                 try:
                     _bus.remove_signal_receiver(signal_handler, dbus_interface="org.asamk.Signal")
+                    _bus.remove_signal_receiver(
+                        _on_name_owner_changed,
+                        signal_name="NameOwnerChanged",
+                        dbus_interface="org.freedesktop.DBus",
+                    )
                 except Exception:  # nosec B110 - Intentionally ignore cleanup failures
                     pass
 
@@ -158,6 +163,14 @@ def connect_signal_interface(
                     member_keyword="member",
                     path_keyword="path",
                 )
+                # Fast outage detection: the bus daemon emits NameOwnerChanged
+                # as soon as the signal-cli name vanishes - no need to wait for
+                # a failed call or the 30s watchdog probe.
+                _bus.add_signal_receiver(
+                    _on_name_owner_changed,
+                    signal_name="NameOwnerChanged",
+                    dbus_interface="org.freedesktop.DBus",
+                )
 
             # Clear stale introspection cache so /asyncapi reflects the live instance
             from swb.asyncapi import clear_introspection_cache
@@ -189,7 +202,8 @@ def _reconnect_loop():
 
     while not _dbus_connected:
         logging.info(f"Reconnecting in {_reconnect_backoff}s...")
-        time.sleep(_reconnect_backoff)
+        _reconnect_wake.wait(_reconnect_backoff)
+        _reconnect_wake.clear()
         _reconnect_backoff = min(_reconnect_backoff * 2, 60)
 
         if _config is None:
@@ -230,13 +244,40 @@ def _broadcast_to_clients(payload: dict) -> None:
             logging.debug("Failed to broadcast to client (disconnected?)", exc_info=True)
 
 
+def _on_connection_lost(reason: str) -> None:
+    """Mark the connection down, notify clients, and start the reconnect loop."""
+    global _dbus_connected, _reconnect_thread
+
+    if _dbus_connected:
+        logging.warning(f"DBus connection lost: {reason}")
+        _dbus_connected = False
+        _broadcast_to_clients({"signal": "Disconnected"})
+
+    # Start background reconnect thread if not already running
+    if _reconnect_thread is None or not _reconnect_thread.is_alive():
+        _reconnect_thread = threading.Thread(target=_reconnect_loop, daemon=True)
+        _reconnect_thread.start()
+
+
+def _on_name_owner_changed(name, _old_owner, new_owner, **_kwargs):
+    """Track org.asamk.Signal ownership on the bus (runs on the GLib thread).
+
+    Vanish -> instant outage detection. Reappear -> wake the reconnect loop
+    for an immediate retry instead of waiting out the backoff sleep.
+    """
+    if name != "org.asamk.Signal":
+        return
+    if not new_owner:
+        _on_connection_lost("org.asamk.Signal vanished from the bus")
+    elif not _dbus_connected:
+        _reconnect_wake.set()
+
+
 def handle_dbus_error(exc: Exception) -> None:
     """On DBus connection errors: mark disconnected, start background reconnect, re-raise.
 
     Non-connection DBus errors are re-raised immediately without triggering reconnect.
     """
-    global _dbus_connected, _reconnect_thread
-
     if not isinstance(exc, dbus.exceptions.DBusException):
         raise exc
 
@@ -246,15 +287,7 @@ def handle_dbus_error(exc: Exception) -> None:
     if not is_connection_error:
         raise exc
 
-    if _dbus_connected:
-        logging.warning(f"DBus connection lost: {error_name}")
-        _dbus_connected = False
-        _broadcast_to_clients({"signal": "Disconnected"})
-
-    # Start background reconnect thread if not already running
-    if _reconnect_thread is None or not _reconnect_thread.is_alive():
-        _reconnect_thread = threading.Thread(target=_reconnect_loop, daemon=True)
-        _reconnect_thread.start()
+    _on_connection_lost(error_name)
 
     raise exc
 

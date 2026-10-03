@@ -224,6 +224,69 @@ class TestProbe:
         assert iface_name == "org.asamk.SignalControl"
 
 
+class TestNameOwnerChanged:
+    """Test fast outage detection via org.freedesktop.DBus.NameOwnerChanged."""
+
+    def test_vanish_marks_disconnected_and_starts_reconnect(self):
+        """org.asamk.Signal losing its owner triggers the disconnect path."""
+        import swb.dbus_client as dc
+
+        original_connected = dc._dbus_connected
+        original_thread = dc._reconnect_thread
+        try:
+            dc._dbus_connected = True
+            dc._reconnect_thread = None
+
+            dc._on_name_owner_changed("org.asamk.Signal", ":1.10", "")
+
+            assert dc._dbus_connected is False
+            assert dc._reconnect_thread is not None
+        finally:
+            dc._dbus_connected = original_connected
+            dc._reconnect_thread = original_thread
+
+    def test_other_names_are_ignored(self):
+        """NameOwnerChanged for unrelated names is a no-op."""
+        import swb.dbus_client as dc
+
+        original_connected = dc._dbus_connected
+        try:
+            dc._dbus_connected = True
+            dc._on_name_owner_changed("org.other.Service", ":1.10", "")
+            assert dc._dbus_connected is True
+        finally:
+            dc._dbus_connected = original_connected
+
+    def test_reappear_wakes_reconnect_loop(self):
+        """org.asamk.Signal re-registering wakes the sleeping reconnect loop."""
+        import swb.dbus_client as dc
+
+        original_connected = dc._dbus_connected
+        dc._reconnect_wake.clear()
+        try:
+            dc._dbus_connected = False
+            dc._on_name_owner_changed("org.asamk.Signal", "", ":1.11")
+            assert dc._reconnect_wake.is_set()
+        finally:
+            dc._dbus_connected = original_connected
+            dc._reconnect_wake.clear()
+
+    def test_reappear_while_connected_is_noop(self):
+        """A new owner while connected must not mark anything or wake the loop."""
+        import swb.dbus_client as dc
+
+        original_connected = dc._dbus_connected
+        dc._reconnect_wake.clear()
+        try:
+            dc._dbus_connected = True
+            dc._on_name_owner_changed("org.asamk.Signal", ":1.10", ":1.11")
+            assert dc._dbus_connected is True
+            assert not dc._reconnect_wake.is_set()
+        finally:
+            dc._dbus_connected = original_connected
+            dc._reconnect_wake.clear()
+
+
 class TestSetupGlibLoop:
     """Test GLib loop setup."""
 
